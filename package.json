@@ -1,0 +1,79 @@
+{
+  "name": "@frxncisxo/prism",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "🔮 AI-Powered Edge Orchestration & Distributed Inference. Deploy ML models at the edge with real-time sync, automatic conflict resolution, and zero downtime.",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./edge": {
+      "import": "./dist/edge.mjs",
+      "require": "./dist/edge.js",
+      "types": "./dist/edge.d.ts"
+    },
+    "./inference": {
+      "import": "./dist/inference.mjs",
+      "require": "./dist/inference.js",
+      "types": "./dist/inference.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify",
+    "dev": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --watch",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "lint": "eslint src --fix",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "keywords": [
+    "edge-ai",
+    "inference",
+    "distributed",
+    "ml-models",
+    "edge-computing",
+    "crdt",
+    "real-time-sync",
+    "llm",
+    "typescript",
+    "performance"
+  ],
+  "author": "Francisco Molina <frxcisxo@dev.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/frxcisxo/prism"
+  },
+  "bugs": {
+    "url": "https://github.com/frxcisxo/prism/issues"
+  },
+  "homepage": "https://github.com/frxcisxo/prism",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.56.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.0.0"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.7.13",
+    "node-fetch": "^3.3.2",
+    "zod": "^3.22.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
