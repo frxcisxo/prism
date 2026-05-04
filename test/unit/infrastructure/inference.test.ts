@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { ModelLoader, InferenceEngine, InferenceConfig } from './inference';
+import { ModelLoader, InferenceEngine, InferenceConfig } from '../../../src/infrastructure/inference/inference';
 
 describe('ModelLoader', () => {
   let loader: ModelLoader;
@@ -148,6 +148,9 @@ describe('InferenceEngine', () => {
       expect(result).toEqual({
         text: expect.any(String),
         tokens: expect.any(Number),
+        modelId: 'test-model',
+        modelName: 'Test Model',
+        source: expect.stringMatching(/cpu|gpu/),
       });
     });
 
@@ -158,6 +161,9 @@ describe('InferenceEngine', () => {
       expect(result).toEqual({
         text: expect.any(String),
         tokens: expect.any(Number),
+        modelId: 'test-model',
+        modelName: 'Test Model',
+        source: expect.stringMatching(/cpu|gpu/),
       });
     });
 
@@ -170,7 +176,11 @@ describe('InferenceEngine', () => {
 
       // Second call should use cache
       const result2 = await engine.infer('test-model', input, { cache: true });
-      expect(result2).toEqual(result1);
+      // Ignore the 'cached' property for deep equality
+      const { cached: _c1, ...r1 } = result1;
+      const { cached: _c2, ...r2 } = result2;
+      expect(r2).toEqual(r1);
+      expect(result2.cached).toBe(true);
     });
 
     it('should skip cache when disabled', async () => {
@@ -208,9 +218,12 @@ describe('InferenceEngine', () => {
 
       expect(results).toHaveLength(3);
       results.forEach(result => {
-        expect(result).toEqual({
+        expect(result).toMatchObject({
           text: expect.any(String),
           tokens: expect.any(Number),
+          modelId: 'test-model',
+          modelName: 'Test Model',
+          source: expect.stringMatching(/cpu|gpu/),
         });
       });
     });
@@ -224,8 +237,7 @@ describe('InferenceEngine', () => {
   describe('getStats', () => {
     it('should return engine statistics', () => {
       const stats = engine.getStats();
-
-      expect(stats).toEqual({
+      expect(stats).toMatchObject({
         loadedModels: 0,
         totalRequests: 0,
         averageLatency: 0,

@@ -3,7 +3,7 @@
  * Deploy to: Vercel Edge Functions, Cloudflare Workers, Netlify Edge
  */
 
-import type { InferenceRequest, InferenceResult } from './index';
+import type { InferenceRequest, InferenceResult } from '../../index';
 
 export interface EdgeConfig {
   platform: 'vercel' | 'cloudflare' | 'netlify' | 'deno-deploy';

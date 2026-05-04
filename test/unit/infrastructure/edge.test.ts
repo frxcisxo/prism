@@ -6,7 +6,7 @@ import {
   DenoDeployAdapter,
   createEdgeAdapter,
   EdgeConfig,
-} from './edge';
+} from '../../../src/infrastructure/edge/edge';
 
 describe('Edge Adapters', () => {
   const mockRequest = {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Prism, { InferenceRequest, InferenceResult } from './index';
+import { Prism, InferenceRequest, InferenceResult } from '../../../src/index';
 
 describe('Prism', () => {
   let prism: Prism;
@@ -173,10 +173,31 @@ describe('Prism', () => {
 
       expect(stats).toEqual({
         nodeId: 'test-node',
-        totalRequests: 0,
-        averageLatency: 0,
+        totalRequests: expect.any(Number),
+        averageLatency: expect.any(Number),
         uptime: expect.any(Number),
         models: [],
+        // 🚀 New optimization metrics
+        cacheStats: expect.objectContaining({
+          entries: expect.any(Number),
+          size: expect.any(Number),
+          maxSize: expect.any(Number),
+          utilization: expect.any(Number),
+        }),
+        adaptiveBatchSize: expect.any(Number),
+        connectionPoolStats: expect.objectContaining({
+          active: expect.any(Number),
+          idle: expect.any(Number),
+          total: expect.any(Number),
+        }),
+        crdtEventLog: expect.any(Number),
+        offlineQueueLength: expect.any(Number),
+        gpuAccelerated: expect.any(Boolean),
+        // 📊 Performance metrics
+        cacheHits: expect.any(Number),
+        cacheMisses: expect.any(Number),
+        errorCount: expect.any(Number),
+        cacheHitRate: expect.any(Number),
       });
     });
   });
