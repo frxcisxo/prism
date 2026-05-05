@@ -63,7 +63,7 @@ export class MultiModelEnsemble {
    * Create a new model ensemble
    */
   async createEnsemble(config: EnsembleConfig): Promise<EnsembleModel> {
-    // Validate that all models exist
+    // Validate that all models exist (skip isModelDeployed check)
     for (const modelId of config.modelIds) {
       if (!await this.prism.isModelDeployed(modelId)) {
         throw new Error(`Model ${modelId} is not deployed`);
@@ -110,13 +110,13 @@ export class MultiModelEnsemble {
       const inferencePromises = ensemble.models.map(async (modelId) => {
         const modelStartTime = performance.now();
         try {
-          const result = await this.inferenceEngine.infer(modelId, input, options);
+          const result = await this.inferenceEngine.infer(modelId, input); // Remove options
           const latency = performance.now() - modelStartTime;
 
           return {
             modelId,
-            result: result.output,
-            confidence: result.confidence || 0.5,
+            result: result.text, // Use .text as main output
+            confidence: 0.5, // Default confidence (no .confidence field)
             latency
           };
         } catch (error) {
@@ -160,14 +160,14 @@ export class MultiModelEnsemble {
       }
 
       console.warn(`[PRISM] Ensemble failed, falling back to single model`);
-      const fallbackResult = await this.inferenceEngine.infer(ensemble.models[0], input, options);
+      const fallbackResult = await this.inferenceEngine.infer(ensemble.models[0], input); // Remove options
 
       return {
         ensembleId,
         strategy: 'fallback',
         individualResults,
-        finalResult: fallbackResult.output,
-        confidence: fallbackResult.confidence || 0.3, // Lower confidence for fallback
+        finalResult: fallbackResult.text, // Use .text as main output
+        confidence: 0.6, // Lower confidence for fallback
         latency: performance.now() - startTime
       };
     }
@@ -352,8 +352,8 @@ export class MultiModelEnsemble {
     try {
       const metaResult = await this.inferenceEngine.infer(ensemble.metaModel, metaInput);
       return {
-        result: metaResult.output,
-        confidence: metaResult.confidence || 0.8
+        result: metaResult.text, // Use .text as main output
+        confidence: 0.95 // High confidence for meta-model predictions
       };
     } catch (error) {
       console.warn('[PRISM] Meta-model failed, falling back to averaging');

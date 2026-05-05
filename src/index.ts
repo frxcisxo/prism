@@ -43,8 +43,7 @@ export {
   CRDTSync,
   PredictiveCache,
   MemoryPool,
-  StreamingInference,
-  WebGPUAccelerator
+  StreamingInference
 } from './index-legacy';
 
 // ============================================================================

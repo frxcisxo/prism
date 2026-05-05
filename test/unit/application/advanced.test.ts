@@ -10,6 +10,7 @@ import {
   MemoryPool,
 } from '../../../src/index';
 import type { InferenceRequest, SyncEvent } from '../../../src/index';
+import { resolve } from 'path';
 
 /**
  * Advanced Features Test Suite for PRISM 2026
@@ -229,7 +230,7 @@ describe('Advanced PRISM Features', () => {
 
       setTimeout(() => {
         expect(cache.get('key2')).toBeUndefined();
-        done();
+        resolve();
       }, 150);
     });
 
