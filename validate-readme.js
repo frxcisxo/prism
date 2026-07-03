@@ -8,6 +8,7 @@
 
 import {
   AdaptiveBatcher,
+  EdgePlacementPlanner,
   ModelShardManager,
   PrismCRDT,
   StreamingInference,
@@ -66,6 +67,44 @@ try {
   console.log('OK PrismCRDT deploy/merge/infer/cache');
 } catch (error) {
   fail('PrismCRDT', error);
+}
+
+try {
+  const planner = new EdgePlacementPlanner();
+  const plan = planner.plan([
+    {
+      id: 'edge-a',
+      name: 'Edge A',
+      region: 'us-east',
+      capabilities: { gpu: true, wasm: true, quantization: true },
+      models: ['validation-model'],
+      status: 'online',
+      lastHeartbeat: Date.now(),
+      loadScore: 1,
+    },
+    {
+      id: 'edge-b',
+      name: 'Edge B',
+      region: 'eu-west',
+      capabilities: { gpu: false, wasm: true, quantization: true },
+      models: ['validation-model'],
+      status: 'online',
+      lastHeartbeat: Date.now(),
+      loadScore: 0,
+    },
+  ], model, {
+    modelId: 'validation-model',
+    preferredRegion: 'us-east',
+    requireWasm: true,
+  });
+
+  if (plan.selectedNodeId !== 'edge-a' || !plan.scores[0].reasons.includes('preferred-region')) {
+    throw new Error('Edge placement planner returned unexpected plan');
+  }
+
+  console.log('OK edge placement planner');
+} catch (error) {
+  fail('edge placement planner', error);
 }
 
 try {

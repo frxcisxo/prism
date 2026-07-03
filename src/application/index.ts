@@ -7,3 +7,4 @@
 
 export * from './prism-crdt';
 export * from './ensemble';
+export * from './edge-placement';

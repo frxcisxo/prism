@@ -217,6 +217,32 @@ describe('PRISM CRDT - Pure CRDT Implementation', () => {
 
       expect(maxLoad - minLoad).toBeLessThanOrEqual(5); // Allow some variance
     });
+
+    it('should expose an explainable placement plan for deployed models', async () => {
+      const model = {
+        id: 'placement-model',
+        name: 'Placement Model',
+        size: 100000,
+        format: 'onnx' as const,
+        quantization: 'int8' as const,
+        capabilities: ['text-classification'],
+      };
+
+      await prism1.deployModel(model);
+      await prism2.deployModel(model);
+      prism1.merge(prism2);
+
+      const plan = prism1.planPlacement({
+        modelId: 'placement-model',
+        requireWasm: true,
+      });
+
+      expect(plan.selectedNodeId).toBeDefined();
+      expect(plan.scores.some(score => score.eligible)).toBe(true);
+      expect(plan.scores.find(score => score.nodeId === plan.selectedNodeId)).toMatchObject({
+        reasons: expect.arrayContaining(['model-available', 'wasm']),
+      });
+    });
   });
 
   describe('Offline Queue CRDT', () => {

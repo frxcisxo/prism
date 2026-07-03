@@ -16,6 +16,7 @@ import {
   type CacheEntry
 } from '../core/crdt/components';
 import { InferenceEngine } from '../infrastructure/inference/inference';
+import { EdgePlacementPlanner, type EdgePlacementPlan } from './edge-placement';
 import type {
   InferenceModel,
   InferenceRequest,
@@ -41,6 +42,7 @@ export class PrismCRDT extends EventEmitter {
   private offlineQueue = new OfflineQueueCRDT();
   private nodeRegistry = new NodeRegistryCRDT();
   private stats = new InferenceStatsCRDT();
+  private placementPlanner = new EdgePlacementPlanner();
 
   // ============================================================================
   // INFERENCE ENGINE
@@ -206,7 +208,7 @@ export class PrismCRDT extends EventEmitter {
     }
 
     // Route to optimal edge (CRDT load balancing)
-    const edgeId = request.edgeId || this.selectOptimalEdge(request.modelId);
+    const edgeId = request.edgeId || this.selectOptimalEdge(request);
 
     try {
       // Perform inference
@@ -248,20 +250,33 @@ export class PrismCRDT extends EventEmitter {
     }
   }
 
-  private selectOptimalEdge(modelId: string): string {
-    // Get nodes that have this model
+  planPlacement(request: Pick<InferenceRequest, 'modelId' | 'options'> & {
+    preferredRegion?: string;
+    requireGPU?: boolean;
+    requireWasm?: boolean;
+    requireQuantization?: boolean;
+  }): EdgePlacementPlan {
     const allNodes = this.nodeRegistry.getActiveNodes();
-    const eligibleNodes = allNodes.filter(node => node.models.includes(modelId));
+    const model = this.modelRegistry.getAllModels().get(request.modelId);
 
-    if (eligibleNodes.length === 0) {
-      throw new Error(`No nodes available for model ${modelId}`);
+    return this.placementPlanner.plan(allNodes, model, {
+      modelId: request.modelId,
+      preferredRegion: request.preferredRegion,
+      requireGPU: request.requireGPU,
+      requireWasm: request.requireWasm,
+      requireQuantization: request.requireQuantization,
+      load: this.loadBalancer.getLoadDistribution(),
+    });
+  }
+
+  private selectOptimalEdge(request: InferenceRequest): string {
+    const plan = this.planPlacement({
+      modelId: request.modelId,
+    });
+    if (!plan.selectedNodeId) {
+      throw new Error(`No nodes available for model ${request.modelId}`);
     }
-
-    // CRDT load balancing
-    const nodeIds = eligibleNodes.map(node => node.id);
-    const optimalNode = this.loadBalancer.selectOptimalNode(nodeIds);
-
-    return optimalNode || nodeIds[0];
+    return plan.selectedNodeId;
   }
 
   private async performInference(request: InferenceRequest, edgeId: string): Promise<any> {

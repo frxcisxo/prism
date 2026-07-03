@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-189%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -24,6 +24,7 @@ Implemented today:
 - Runtime diagnostics with loaded model health, runtime grouping, cache counters, and redacted session metadata.
 - Signed model manifests with canonical JSON and HMAC-SHA256 verification for edge artifact provenance.
 - Authenticated model artifact encryption with AES-256-GCM envelopes and PBKDF2-SHA256 key derivation.
+- Explainable edge placement planner for region, capability, model availability, and load-aware routing.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
 
@@ -439,6 +440,24 @@ console.log(diagnostics.runtimes[0].runtime); // "ollama"
 ```
 
 `getLoadedModelDiagnostics()` redacts sensitive fields such as authorization headers, API keys, tokens, and credentials before returning session metadata.
+
+### Explainable Edge Placement
+
+Use `EdgePlacementPlanner` when you need to understand or override where PRISM should run a model. It scores active nodes by model availability, GPU/WASM/quantization capabilities, preferred region, and load.
+
+```typescript
+import { EdgePlacementPlanner } from '@frxncisxo/prism';
+
+const planner = new EdgePlacementPlanner();
+const plan = planner.plan(nodes, model, {
+  modelId: 'llama-3.1-8b',
+  preferredRegion: 'us-east',
+  requireWasm: true,
+});
+
+console.log(plan.selectedNodeId);
+console.log(plan.scores[0].reasons);
+```
 
 ### Signed Model Manifests
 
@@ -986,6 +1005,7 @@ import {
   // Core functionality (fully implemented)
   PrismCRDT,               // CRDT synchronization with mathematical guarantees
   InferenceEngine,         // Low-level inference with WebGPU acceleration
+  EdgePlacementPlanner,    // Explainable load/capability-aware edge placement
   WebGPUAccelerator,       // Browser GPU inference with WGSL shaders
   MultiModelEnsemble,      // Ensemble strategies for improved accuracy
 
@@ -1040,7 +1060,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 185 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 189 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -1053,6 +1073,7 @@ await prism.deployModel({
 - [x] **Runtime diagnostics** - Loaded model health, runtime grouping, cache counters, and redacted session metadata
 - [x] **Signed model manifests** - Canonical JSON signing and verification for artifact provenance
 - [x] **Encrypted model artifacts** - AES-256-GCM encryption/decryption with PBKDF2-SHA256 and authenticated metadata
+- [x] **Explainable edge placement** - Region, model, capability, and load-aware routing plans
 
 ### 🚧 **In Development**
 
@@ -1081,7 +1102,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **185 tests passing**:
+Tests are organized by Clean Architecture layers with **189 tests passing**:
 
 ```
 test/
