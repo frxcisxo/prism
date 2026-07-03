@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-143%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -16,7 +16,7 @@ Implemented today:
 - CRDT-backed model registry, distributed cache, node registry, load balancing counters, offline queue, and inference stats.
 - `PrismCRDT` orchestration with deploy, merge, route, cache, stats, and serialization flows.
 - Multi-model ensemble strategies: voting, averaging, weighted, stacking, boosting, and fallback behavior.
-- Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and cache backends.
+- Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and provider-native cache backends.
 - SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, and optional real ONNX Runtime Web execution.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
@@ -25,7 +25,7 @@ Implemented today:
 Experimental / roadmap:
 
 - TensorFlow Lite, GGUF, and safetensors loaders currently expose the adapter shape; ONNX has an optional real runtime through `onnxruntime-web`.
-- Edge adapters now validate, cache, and invoke injected inference handlers; production KV/provider-specific bindings still need concrete integrations.
+- Edge adapters now validate, cache, and invoke injected inference handlers; Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs cache adapters are implemented as dependency-free bindings.
 - Real LLM token streaming is still API/architecture work in progress.
 
 ## 🏗️ Clean Architecture
@@ -320,7 +320,7 @@ const results = await engine.batchInfer('llama-3.1-8b', [
 ### Edge Deployment (Vercel)
 
 ```typescript
-import { VercelEdgeAdapter } from '@frxncisxo/prism';
+import { RedisEdgeCache, VercelEdgeAdapter } from '@frxncisxo/prism';
 
 // In `api/prism.ts` (Vercel Edge Function)
 export const config = { runtime: 'edge' };
@@ -330,6 +330,7 @@ const adapter = new VercelEdgeAdapter({
   region: 'us-east-1',
   cacheTtl: 3600, // Cache results for 1 hour
 }, {
+  cache: new RedisEdgeCache(redis),
   infer: async (request, context) => ({
     id: request.id,
     modelId: request.modelId,
@@ -431,6 +432,29 @@ prism.listModels().forEach(model => {
 ```
 
 The adapter validates request shape, creates a SHA-256 cache key from model/input/options, serves repeated requests from an injected cache backend, and returns `cache-control: no-store` at the HTTP layer so prompts and model outputs are not stored by shared browser/CDN caches by accident.
+
+Provider-native cache bindings are available without extra PRISM dependencies:
+
+```typescript
+import {
+  CloudflareKVEdgeCache,
+  DenoKVEdgeCache,
+  NetlifyBlobsEdgeCache,
+  RedisEdgeCache,
+} from '@frxncisxo/prism/edge';
+
+// Cloudflare Workers KV: env.PRISM_CACHE
+new CloudflareKVEdgeCache(env.PRISM_CACHE);
+
+// Vercel Marketplace Redis / Upstash-compatible clients
+new RedisEdgeCache(redis);
+
+// Deno KV
+new DenoKVEdgeCache(await Deno.openKv());
+
+// Netlify Blobs store from @netlify/blobs
+new NetlifyBlobsEdgeCache(store);
+```
 
 ## 🚀 Advanced Optimizations
 
@@ -794,16 +818,16 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 143 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 148 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
+- [x] **Provider-native edge cache bindings** - Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs adapters
 - [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
 
 ### 🚧 **In Development**
 
 - [ ] **Streaming inference** - Real-time token streaming (basic structure exists, needs completion)
 - [ ] **Adaptive batching** - Dynamic batch size optimization (basic implementation exists)
-- [ ] **Provider-native edge bindings** - Vercel KV, Cloudflare KV, Netlify Blobs, and Deno KV integration packages
 
 ### 📋 **Future Features**
 
@@ -828,7 +852,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **143 tests passing**:
+Tests are organized by Clean Architecture layers with **148 tests passing**:
 
 ```
 test/

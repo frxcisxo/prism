@@ -4,6 +4,11 @@ import {
   CloudflareEdgeAdapter,
   NetlifyEdgeAdapter,
   DenoDeployAdapter,
+  CloudflareKVEdgeCache,
+  DenoKVEdgeCache,
+  MemoryEdgeCache,
+  NetlifyBlobsEdgeCache,
+  RedisEdgeCache,
   createEdgeAdapter,
   EdgeConfig,
   EdgeInferenceHandler,
@@ -190,6 +195,85 @@ describe('Edge Adapters', () => {
     it('should throw error for unknown platform', () => {
       const config = { platform: 'unknown' } as any;
       expect(() => createEdgeAdapter(config)).toThrow('Unknown edge platform: unknown');
+    });
+  });
+
+  describe('Edge cache adapters', () => {
+    it('should cache values in memory with TTL', async () => {
+      const cache = new MemoryEdgeCache();
+
+      await cache.set('key', { value: 42 }, 60);
+
+      await expect(cache.get('key')).resolves.toEqual({ value: 42 });
+    });
+
+    it('should map Cloudflare KV to JSON get and expirationTtl', async () => {
+      const namespace = {
+        get: vi.fn().mockResolvedValue({ value: 'cached' }),
+        put: vi.fn().mockResolvedValue(undefined),
+      };
+      const cache = new CloudflareKVEdgeCache(namespace);
+
+      await expect(cache.get('cf-key')).resolves.toEqual({ value: 'cached' });
+      await cache.set('cf-key', { value: 'fresh' }, 120);
+
+      expect(namespace.get).toHaveBeenCalledWith('cf-key', { type: 'json' });
+      expect(namespace.put).toHaveBeenCalledWith(
+        'cf-key',
+        JSON.stringify({ value: 'fresh' }),
+        { expirationTtl: 120 }
+      );
+    });
+
+    it('should map Redis-compatible stores to ex TTL', async () => {
+      const store = {
+        get: vi.fn().mockResolvedValue(JSON.stringify({ ok: true })),
+        set: vi.fn().mockResolvedValue('OK'),
+      };
+      const cache = new RedisEdgeCache(store);
+
+      await expect(cache.get('redis-key')).resolves.toEqual({ ok: true });
+      await cache.set('redis-key', { ok: true }, 45);
+
+      expect(store.set).toHaveBeenCalledWith('redis-key', { ok: true }, { ex: 45 });
+    });
+
+    it('should map Deno KV stores to prefixed keys and expireIn milliseconds', async () => {
+      const store = {
+        get: vi.fn().mockResolvedValue({ value: { deno: true } }),
+        set: vi.fn().mockResolvedValue({ ok: true }),
+      };
+      const cache = new DenoKVEdgeCache(store, ['custom', 'prefix']);
+
+      await expect(cache.get('deno-key')).resolves.toEqual({ deno: true });
+      await cache.set('deno-key', { deno: true }, 7);
+
+      expect(store.get).toHaveBeenCalledWith(['custom', 'prefix', 'deno-key']);
+      expect(store.set).toHaveBeenCalledWith(
+        ['custom', 'prefix', 'deno-key'],
+        { deno: true },
+        { expireIn: 7000 }
+      );
+    });
+
+    it('should map Netlify Blobs to an expiring JSON envelope', async () => {
+      const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
+      const store = {
+        get: vi.fn().mockResolvedValue({ value: { blob: true }, expiresAt: now + 1000 }),
+        setJSON: vi.fn().mockResolvedValue(undefined),
+      };
+      const cache = new NetlifyBlobsEdgeCache(store);
+
+      await expect(cache.get('blob-key')).resolves.toEqual({ blob: true });
+      await cache.set('blob-key', { blob: true }, 5);
+
+      expect(store.get).toHaveBeenCalledWith('blob-key', { type: 'json' });
+      expect(store.setJSON).toHaveBeenCalledWith('blob-key', {
+        value: { blob: true },
+        expiresAt: now + 5000,
+      });
+      vi.restoreAllMocks();
     });
   });
 });

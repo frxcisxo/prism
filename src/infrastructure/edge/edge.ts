@@ -48,7 +48,7 @@ export interface EdgeAdapterDependencies {
   infer?: EdgeInferenceHandler;
 }
 
-class MemoryEdgeCache implements EdgeCache {
+export class MemoryEdgeCache implements EdgeCache {
   private entries = new Map<string, { expiresAt: number; value: unknown }>();
 
   async get<T>(key: string): Promise<T | undefined> {
@@ -76,6 +76,166 @@ class MemoryEdgeCache implements EdgeCache {
       value,
     });
   }
+}
+
+export interface CloudflareKVNamespace {
+  get<T = unknown>(
+    key: string,
+    options?: 'json' | { type?: 'json' | 'text'; cacheTtl?: number }
+  ): Promise<T | string | null>;
+  put(
+    key: string,
+    value: string,
+    options?: { expirationTtl?: number }
+  ): Promise<void>;
+}
+
+export class CloudflareKVEdgeCache implements EdgeCache {
+  constructor(
+    private readonly namespace: CloudflareKVNamespace,
+    private readonly options: { readCacheTtl?: number } = {}
+  ) {}
+
+  async get<T>(key: string): Promise<T | undefined> {
+    const value = await this.namespace.get<T>(key, {
+      type: 'json',
+      ...(this.options.readCacheTtl ? { cacheTtl: this.options.readCacheTtl } : {}),
+    });
+
+    if (value === null) {
+      return undefined;
+    }
+
+    return this.parseProviderValue<T>(value);
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    await this.namespace.put(key, JSON.stringify(value), {
+      expirationTtl: ttlSeconds,
+    });
+  }
+
+  private parseProviderValue<T>(value: T | string): T {
+    return typeof value === 'string' ? JSON.parse(value) as T : value;
+  }
+}
+
+export interface RedisLikeStore {
+  get<T = unknown>(key: string): Promise<T | string | null>;
+  set<T = unknown>(
+    key: string,
+    value: T,
+    options?: { ex?: number }
+  ): Promise<unknown>;
+}
+
+export class RedisEdgeCache implements EdgeCache {
+  constructor(private readonly store: RedisLikeStore) {}
+
+  async get<T>(key: string): Promise<T | undefined> {
+    const value = await this.store.get<T>(key);
+
+    if (value === null) {
+      return undefined;
+    }
+
+    return typeof value === 'string' ? JSON.parse(value) as T : value;
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    await this.store.set(key, value, { ex: ttlSeconds });
+  }
+}
+
+export type DenoKvKeyPart = string | number | bigint | boolean | Uint8Array;
+
+export interface DenoKvLikeStore {
+  get<T = unknown>(key: readonly DenoKvKeyPart[]): Promise<{ value: T | null }>;
+  set<T = unknown>(
+    key: readonly DenoKvKeyPart[],
+    value: T,
+    options?: { expireIn?: number }
+  ): Promise<unknown>;
+}
+
+export class DenoKVEdgeCache implements EdgeCache {
+  constructor(
+    private readonly store: DenoKvLikeStore,
+    private readonly prefix: readonly DenoKvKeyPart[] = ['prism', 'edge-cache']
+  ) {}
+
+  async get<T>(key: string): Promise<T | undefined> {
+    const result = await this.store.get<T>(this.keyFor(key));
+    return result.value ?? undefined;
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    await this.store.set(this.keyFor(key), value, {
+      expireIn: ttlSeconds * 1000,
+    });
+  }
+
+  private keyFor(key: string): readonly DenoKvKeyPart[] {
+    return [...this.prefix, key];
+  }
+}
+
+export interface NetlifyBlobStore {
+  get<T = unknown>(
+    key: string,
+    options?: { type?: 'json' | 'text' }
+  ): Promise<T | string | null>;
+  setJSON<T = unknown>(key: string, value: T): Promise<void>;
+}
+
+export class NetlifyBlobsEdgeCache implements EdgeCache {
+  constructor(private readonly store: NetlifyBlobStore) {}
+
+  async get<T>(key: string): Promise<T | undefined> {
+    const envelope = await this.store.get<NetlifyCacheEnvelope<T>>(key, { type: 'json' });
+
+    if (!envelope) {
+      return undefined;
+    }
+
+    const parsed = typeof envelope === 'string'
+      ? JSON.parse(envelope) as NetlifyCacheEnvelope<T>
+      : envelope;
+
+    if (parsed.expiresAt <= Date.now()) {
+      return undefined;
+    }
+
+    return parsed.value;
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    await this.store.setJSON(key, {
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+  }
+}
+
+interface NetlifyCacheEnvelope<T> {
+  value: T;
+  expiresAt: number;
 }
 
 abstract class BaseEdgeAdapter {
@@ -333,6 +493,11 @@ export function createEdgeAdapter(
 }
 
 export default {
+  MemoryEdgeCache,
+  CloudflareKVEdgeCache,
+  RedisEdgeCache,
+  DenoKVEdgeCache,
+  NetlifyBlobsEdgeCache,
   VercelEdgeAdapter,
   CloudflareEdgeAdapter,
   NetlifyEdgeAdapter,

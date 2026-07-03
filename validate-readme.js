@@ -8,7 +8,7 @@
 
 import { ModelShardManager, PrismCRDT } from './dist/index.js';
 import { InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
-import { VercelEdgeAdapter, CloudflareEdgeAdapter } from './dist/edge.js';
+import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
 const addOneSha256 = 'b7d06325e6a907bdad72053370bc5d3501f599c89eb7e0c9577e556527e83eef';
@@ -116,6 +116,16 @@ try {
 
 try {
   let inferenceCalls = 0;
+  const kvNamespace = {
+    store: new Map(),
+    async get(key) {
+      const raw = this.store.get(key);
+      return raw ? JSON.parse(raw.value) : null;
+    },
+    async put(key, value, options) {
+      this.store.set(key, { value, options });
+    },
+  };
   const vercel = new VercelEdgeAdapter({
     platform: 'vercel',
     region: 'validation',
@@ -141,6 +151,8 @@ try {
     platform: 'cloudflare',
     region: 'validation',
     cacheTtl: 60,
+  }, {
+    cache: new CloudflareKVEdgeCache(kvNamespace),
   });
 
   for (const adapter of [vercel, cloudflare]) {
@@ -173,6 +185,11 @@ try {
 
   if (inferenceCalls !== 1 || cachedBody.cached !== true || cachedBody.data.output.handler !== 'injected') {
     throw new Error('Edge adapter did not use injected handler/cache as expected');
+  }
+
+  const storedKvEntries = Array.from(kvNamespace.store.values());
+  if (storedKvEntries.length !== 1 || storedKvEntries[0].options.expirationTtl !== 60) {
+    throw new Error('Cloudflare KV cache adapter did not persist with expirationTtl');
   }
 
   console.log('OK edge adapters infer/cache/security headers');
