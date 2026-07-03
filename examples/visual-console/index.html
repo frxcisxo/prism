@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PRISM Visual Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">PRISM Edge AI</p>
+          <h1>Visual Console</h1>
+        </div>
+        <div class="status-pill" id="networkStatus">Ready</div>
+      </header>
+
+      <section class="control-strip" aria-label="PRISM controls">
+        <button id="runScenario" type="button">Run Scenario</button>
+        <button id="repeatInference" type="button">Repeat Inference</button>
+        <button id="resetDemo" type="button">Reset</button>
+      </section>
+
+      <section class="dashboard" aria-label="PRISM state">
+        <article class="panel network-panel">
+          <div class="panel-head">
+            <h2>Edge Nodes</h2>
+            <span id="syncState">Not synced</span>
+          </div>
+          <div class="node-map">
+            <div class="node-card" id="northNode">
+              <span class="node-dot"></span>
+              <strong>north-edge</strong>
+              <small>GPU · wasm · int8</small>
+              <div class="node-load"><span id="northLoad"></span></div>
+            </div>
+            <div class="sync-line" id="syncLine"></div>
+            <div class="node-card" id="southNode">
+              <span class="node-dot"></span>
+              <strong>south-edge</strong>
+              <small>wasm · int8</small>
+              <div class="node-load"><span id="southLoad"></span></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Model Registry</h2>
+            <span id="modelStatus">Empty</span>
+          </div>
+          <div class="model-card">
+            <div>
+              <strong id="modelName">edge-planner-small</strong>
+              <small id="modelMeta">ONNX · planning · routing</small>
+            </div>
+            <div class="metric">
+              <span id="modelCount">0</span>
+              <small>models visible</small>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Inference</h2>
+            <span id="cacheBadge">Cold</span>
+          </div>
+          <label class="input-label" for="promptInput">Prompt</label>
+          <textarea id="promptInput" rows="4">Plan a safe edge deployment for a retail store.</textarea>
+          <div class="result-box" id="inferenceOutput">Run the scenario to route the first request.</div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Verified Sharding</h2>
+            <span id="shardStatus">Waiting</span>
+          </div>
+          <div class="shard-row">
+            <div class="shard" id="shardA">Shard 0</div>
+            <div class="shard" id="shardB">Shard 1</div>
+          </div>
+          <div class="result-box compact" id="shardOutput">Two verified byte shards will combine into one artifact.</div>
+        </article>
+      </section>
+
+      <section class="timeline-panel" aria-label="Event timeline">
+        <div class="panel-head">
+          <h2>Event Timeline</h2>
+          <span id="eventCount">0 events</span>
+        </div>
+        <ol id="timeline"></ol>
+      </section>
+    </main>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

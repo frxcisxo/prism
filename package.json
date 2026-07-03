@@ -35,6 +35,7 @@
     "demo": "npm run build && node demo.js",
     "demo:onnx": "npm run build && node demo-onnx.js",
     "demo:all": "npm run build && node demo.js && node demo-onnx.js",
+    "example:visual": "npm run build && node examples/visual-console/server.js",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:performance": "vitest --run --reporter=verbose bench/",
