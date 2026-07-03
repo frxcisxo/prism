@@ -5,6 +5,7 @@ import {
   CloudflareWorkersAIRuntime,
   HttpInferenceRuntime,
   InferenceEngine,
+  OllamaRuntime,
   OnnxRuntimeWebRuntime,
   type InferenceConfig,
   type InferenceRuntime
@@ -933,5 +934,168 @@ describe('CloudflareWorkersAIRuntime', () => {
 
     expect(ai.run).toHaveBeenCalledTimes(2);
     expect(results.map(result => result.text)).toEqual(['cf:one', 'cf:two']);
+  });
+});
+
+describe('OllamaRuntime', () => {
+  const ollamaModel = {
+    id: 'local-chat',
+    name: 'Local Chat',
+    version: '1.0.0',
+    format: 'ollama' as const,
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      model: 'llama3.2',
+    },
+  };
+
+  it('should support explicit Ollama models without hijacking generic remote models', () => {
+    const runtime = new OllamaRuntime();
+
+    expect(runtime.supports(ollamaModel)).toBe(true);
+    expect(runtime.supports({
+      id: 'metadata-ollama',
+      name: 'Metadata Ollama',
+      version: '1.0.0',
+      format: 'remote',
+      size: 1,
+      capabilities: [],
+      metadata: { runtime: 'ollama', model: 'qwen3' },
+    })).toBe(true);
+    expect(runtime.supports({
+      id: 'remote-chat',
+      name: 'Remote Chat',
+      version: '1.0.0',
+      format: 'remote',
+      size: 1,
+      capabilities: [],
+    })).toBe(false);
+  });
+
+  it('should call the local Ollama chat endpoint by default', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      message: { role: 'assistant', content: 'local ollama result' },
+      done: true,
+    }), { status: 200 }));
+    const runtime = new OllamaRuntime({ fetch: fetcher });
+
+    const session = await runtime.load(ollamaModel);
+    const output = await runtime.infer(ollamaModel, session, {
+      text: 'Hello local model',
+    }, {
+      temperature: 0.1,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [url, init] = fetcher.mock.calls[0];
+    const body = JSON.parse(String((init as RequestInit).body));
+
+    expect(url).toBe('http://localhost:11434/api/chat');
+    expect(body).toEqual({
+      model: 'llama3.2',
+      stream: false,
+      options: { temperature: 0.1 },
+      messages: [{ role: 'user', content: 'Hello local model' }],
+    });
+    expect(output).toMatchObject({
+      text: 'local ollama result',
+      source: 'remote',
+      runtime: 'ollama',
+      endpoint: 'chat',
+    });
+  });
+
+  it('should call the generate endpoint when configured', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      response: 'generated text',
+      done: true,
+    }), { status: 200 }));
+    const runtime = new OllamaRuntime({
+      host: 'https://ollama.example',
+      apiKey: 'cloud-key',
+      endpoint: 'generate',
+      fetch: fetcher,
+    });
+
+    const session = await runtime.load(ollamaModel);
+    const output = await runtime.infer(ollamaModel, session, {
+      normalized: 'Generate this',
+    }, {});
+    const [url, init] = fetcher.mock.calls[0];
+    const body = JSON.parse(String((init as RequestInit).body));
+
+    expect(url).toBe('https://ollama.example/api/generate');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer cloud-key',
+      },
+    });
+    expect(body).toEqual({
+      model: 'llama3.2',
+      stream: false,
+      prompt: 'Generate this',
+    });
+    expect(output.text).toBe('generated text');
+  });
+
+  it('should support custom request builders and response parsers', async () => {
+    const runtime = new OllamaRuntime({
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String((init as RequestInit).body));
+        return new Response(JSON.stringify({
+          result: { text: `custom:${body.input}` },
+        }), { status: 200 });
+      },
+      buildRequest: (_model, input) => ({ input: input.normalized, stream: false }),
+      parseResponse: (payload) => (payload as any).result.text,
+    });
+
+    const session = await runtime.load(ollamaModel);
+    const output = await runtime.infer(ollamaModel, session, {
+      normalized: 'custom prompt',
+    }, {});
+
+    expect(output.text).toBe('custom:custom prompt');
+  });
+
+  it('should reject Ollama API errors with status and message', async () => {
+    const runtime = new OllamaRuntime({
+      fetch: async () => new Response(JSON.stringify({
+        error: 'model not found',
+      }), { status: 404 }),
+    });
+    const session = await runtime.load(ollamaModel);
+
+    await expect(runtime.infer(ollamaModel, session, { text: 'Hello' }, {}))
+      .rejects.toThrow('Ollama inference failed for local-chat: 404 model not found');
+  });
+
+  it('should work through InferenceEngine and expose raw Ollama payloads', async () => {
+    const engine = new InferenceEngine({
+      runtimes: [
+        new OllamaRuntime({
+          fetch: async () => new Response(JSON.stringify({
+            message: { content: 'engine ollama result' },
+            total_duration: 10,
+          }), { status: 200 }),
+        }),
+      ],
+    });
+
+    await engine.loadModel(ollamaModel);
+    const result = await engine.infer('local-chat', 'Run through engine', { cache: false });
+
+    expect(result).toMatchObject({
+      text: 'engine ollama result',
+      source: 'remote',
+      modelId: 'local-chat',
+      raw: {
+        runtime: 'ollama',
+        status: 200,
+      },
+    });
   });
 });

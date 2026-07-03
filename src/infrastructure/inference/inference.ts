@@ -92,6 +92,20 @@ export interface CloudflareWorkersAIConfig {
   parseResponse?: (response: unknown) => string;
 }
 
+export interface OllamaRuntimeConfig {
+  host?: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  endpoint?: 'chat' | 'generate';
+  fetch?: typeof fetch;
+  buildRequest?: (
+    model: InferenceModel,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ) => Record<string, any>;
+  parseResponse?: (response: unknown) => string;
+}
+
 export interface BatchedInference {
   requests: InferenceInput[];
   batchSize: number;
@@ -922,6 +936,178 @@ export class CloudflareWorkersAIRuntime implements InferenceRuntime {
     const data = payload as Record<string, any>;
     const errors = Array.isArray(data?.errors) ? data.errors : [];
     const message = errors[0]?.message || data?.error?.message || data?.message || fallback;
+    return String(message).slice(0, 240);
+  }
+}
+
+export class OllamaRuntime implements InferenceRuntime {
+  id = 'ollama';
+
+  constructor(private readonly config: OllamaRuntimeConfig = {}) {}
+
+  supports(model: InferenceModel): boolean {
+    const runtime = model.metadata?.runtime || model.metadata?.provider;
+
+    return runtime === this.id
+      || model.metadata?.ollama === true
+      || model.format === 'ollama';
+  }
+
+  async load(model: InferenceModel): Promise<Record<string, any>> {
+    return {
+      runtime: this.id,
+      endpoint: model.metadata?.endpoint || this.config.endpoint || 'chat',
+      host: this.resolveHost(model),
+      remoteModel: this.resolveModelName(model),
+      headers: this.resolveHeaders(model),
+    };
+  }
+
+  async infer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Promise<Record<string, any>> {
+    const fetcher = this.config.fetch || globalThis.fetch;
+    if (!fetcher) {
+      throw new Error('fetch is required for OllamaRuntime');
+    }
+
+    const endpoint = session.endpoint === 'generate' ? 'generate' : 'chat';
+    const url = `${String(session.host).replace(/\/$/, '')}/api/${endpoint}`;
+    const body = this.config.buildRequest
+      ? this.config.buildRequest(model, input, options)
+      : this.buildRequest(model, session, input, options, endpoint);
+    const response = await fetcher(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(session.headers as Record<string, string> || {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    const payload = text ? this.parseJson(text, url) : {};
+
+    if (!response.ok) {
+      throw new Error(`Ollama inference failed for ${model.id}: ${response.status} ${this.errorPreview(payload, text)}`);
+    }
+
+    const outputText = this.config.parseResponse
+      ? this.config.parseResponse(payload)
+      : this.parseResponse(payload);
+
+    return {
+      text: outputText,
+      response: payload,
+      request: body,
+      status: response.status,
+      remoteModel: session.remoteModel,
+      endpoint,
+      source: 'remote',
+      runtime: this.id,
+    };
+  }
+
+  async batchInfer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    inputs: Record<string, any>[],
+    options: InferenceOptions
+  ): Promise<Record<string, any>[]> {
+    return Promise.all(inputs.map(input => this.infer(model, session, input, options)));
+  }
+
+  private resolveHost(model: InferenceModel): string {
+    const host = model.metadata?.host || model.metadata?.baseUrl || this.config.host || 'http://localhost:11434';
+    if (typeof host !== 'string' || host.length === 0) {
+      throw new Error(`Ollama model ${model.id} requires a valid host`);
+    }
+    return host;
+  }
+
+  private resolveModelName(model: InferenceModel): string {
+    const remoteModel = model.metadata?.remoteModel || model.metadata?.model || model.id;
+    if (typeof remoteModel !== 'string' || remoteModel.length === 0) {
+      throw new Error(`Ollama model ${model.id} requires metadata.remoteModel or metadata.model`);
+    }
+    return remoteModel;
+  }
+
+  private resolveHeaders(model: InferenceModel): Record<string, string> {
+    const headers: Record<string, string> = {
+      ...(this.config.headers || {}),
+      ...(model.metadata?.headers || {}),
+    };
+    const apiKey = model.metadata?.apiKey || this.config.apiKey;
+
+    if (apiKey && !headers.authorization && !headers.Authorization) {
+      headers.authorization = `Bearer ${apiKey}`;
+    }
+
+    return headers;
+  }
+
+  private buildRequest(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions,
+    endpoint: 'chat' | 'generate'
+  ): Record<string, any> {
+    const common = {
+      model: session.remoteModel || this.resolveModelName(model),
+      stream: false,
+      ...(options.temperature ?? model.metadata?.temperature ? { options: { temperature: options.temperature ?? model.metadata?.temperature } } : {}),
+      ...(model.metadata?.request || {}),
+    };
+
+    if (endpoint === 'generate') {
+      return {
+        ...common,
+        prompt: input.prompt || input.text || input.normalized || JSON.stringify(input),
+      };
+    }
+
+    return {
+      ...common,
+      messages: Array.isArray(input.messages)
+        ? input.messages
+        : [
+            {
+              role: 'user',
+              content: input.text || input.prompt || input.normalized || JSON.stringify(input),
+            },
+          ],
+    };
+  }
+
+  private parseJson(text: string, endpoint: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Ollama endpoint ${endpoint} returned invalid JSON`);
+    }
+  }
+
+  private parseResponse(payload: unknown): string {
+    const data = payload as Record<string, any>;
+    const content = data.message?.content
+      || data.response
+      || data.text
+      || data.output_text;
+
+    if (typeof content !== 'string') {
+      throw new Error('Ollama response did not include text output');
+    }
+
+    return content;
+  }
+
+  private errorPreview(payload: unknown, fallback: string): string {
+    const data = payload as Record<string, any>;
+    const message = data?.error || data?.message || fallback;
     return String(message).slice(0, 240);
   }
 }

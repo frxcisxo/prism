@@ -7,7 +7,7 @@
  */
 
 import { AdaptiveBatcher, ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
-import { CloudflareWorkersAIRuntime, HttpInferenceRuntime, InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
+import { CloudflareWorkersAIRuntime, HttpInferenceRuntime, InferenceEngine, OllamaRuntime, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
@@ -207,6 +207,54 @@ try {
   console.log('OK Cloudflare Workers AI runtime');
 } catch (error) {
   fail('Cloudflare Workers AI runtime', error);
+}
+
+try {
+  let calls = 0;
+  const runtime = new OllamaRuntime({
+    fetch: async (url, init) => {
+      calls += 1;
+      const body = JSON.parse(String(init.body));
+
+      if (url !== 'http://localhost:11434/api/chat') {
+        throw new Error('Ollama runtime called the wrong endpoint');
+      }
+      if (body.model !== 'llama3.2' || body.messages[0].content !== 'Validate Ollama runtime.') {
+        throw new Error('Ollama runtime sent an unexpected chat request');
+      }
+
+      return new Response(JSON.stringify({
+        message: {
+          role: 'assistant',
+          content: `ollama:${body.messages[0].content}`,
+        },
+        done: true,
+      }), { status: 200 });
+    },
+  });
+  const engine = new InferenceEngine({ runtimes: [runtime] });
+  await engine.loadModel({
+    id: 'validation-ollama',
+    name: 'Validation Ollama',
+    version: '1.0.0',
+    format: 'ollama',
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      model: 'llama3.2',
+    },
+  });
+  const result = await engine.infer('validation-ollama', 'Validate Ollama runtime.', {
+    cache: false,
+  });
+
+  if (calls !== 1 || result.text !== 'ollama:Validate Ollama runtime.' || result.raw?.runtime !== 'ollama') {
+    throw new Error('Ollama runtime smoke check returned unexpected output');
+  }
+
+  console.log('OK Ollama local runtime');
+} catch (error) {
+  fail('Ollama local runtime', error);
 }
 
 try {
