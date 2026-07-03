@@ -1196,52 +1196,190 @@ export class BinarySerializer {
 /**
  * 🚀 STREAMING RESPONSES - For instant feedback on long inferences
  */
-export class StreamingInference {
-  constructor(private prism?: Prism) {} // Optional for testing
+export interface StreamingInferenceChunk extends Partial<InferenceResult> {
+  delta?: string;
+  sequence: number;
+  done: boolean;
+}
 
-  async *streamInfer(request: InferenceRequest): AsyncGenerator<Partial<InferenceResult>, void, unknown> {
-    const startTime = performance.now();
+export interface StreamingInferenceContext {
+  edgeId: string;
+  startedAt: number;
+  signal?: AbortSignal;
+}
 
-    // Send initial response immediately
-    yield {
-      id: request.id,
-      modelId: request.modelId,
-      latency: 0,
-      edgeId: 'streaming',
-      timestamp: Date.now(),
-      cached: false,
+export type StreamingToken =
+  | string
+  | {
+      delta?: string;
+      output?: string | Record<string, any>;
+      edgeId?: string;
+      cached?: boolean;
     };
 
-    // Simulate streaming tokens
-    const words = typeof request.input === 'string' ? request.input.split(' ') : ['streaming'];
+export type StreamingTokenSource = (
+  request: InferenceRequest,
+  context: StreamingInferenceContext
+) => AsyncIterable<StreamingToken> | Iterable<StreamingToken> | Promise<AsyncIterable<StreamingToken> | Iterable<StreamingToken>>;
+
+export interface StreamingInferenceOptions {
+  source?: StreamingTokenSource;
+  edgeId?: string;
+  delayMs?: number;
+  includeInitialChunk?: boolean;
+  signal?: AbortSignal;
+}
+
+export class StreamingInference {
+  constructor(
+    private prism?: Prism,
+    private defaults: StreamingInferenceOptions = {}
+  ) {} // Prism is optional for compatibility with existing callers.
+
+  async *streamInfer(
+    request: InferenceRequest,
+    options: StreamingInferenceOptions = {}
+  ): AsyncGenerator<StreamingInferenceChunk, void, unknown> {
+    const startTime = performance.now();
+    const config = { ...this.defaults, ...options };
+    const edgeId = config.edgeId || request.edgeId || 'streaming';
+    const context: StreamingInferenceContext = {
+      edgeId,
+      startedAt: Date.now(),
+      signal: config.signal,
+    };
+    let sequence = 0;
     let accumulatedOutput = '';
+    let lastEdgeId = edgeId;
+    let cached = false;
 
-    for (let i = 0; i < words.length; i++) {
-      await new Promise(resolve => setTimeout(resolve, 10)); // Simulate token generation
+    this.throwIfAborted(config.signal);
 
-      accumulatedOutput += (i > 0 ? ' ' : '') + words[i];
-
-      yield {
-        id: request.id,
-        modelId: request.modelId,
+    if (config.includeInitialChunk !== false) {
+      yield this.toChunk(request, {
         output: accumulatedOutput,
         latency: performance.now() - startTime,
-        edgeId: 'streaming',
-        timestamp: Date.now(),
-        cached: false,
-      };
+        edgeId: lastEdgeId,
+        cached,
+        sequence: sequence++,
+        done: false,
+      });
     }
 
-    // Final result
-    yield {
-      id: request.id,
-      modelId: request.modelId,
+    const source = config.source || this.defaults.source || this.defaultTokenSource.bind(this);
+    const stream = await source(request, context);
+
+    for await (const token of stream as AsyncIterable<StreamingToken>) {
+      this.throwIfAborted(config.signal);
+
+      if (config.delayMs && config.delayMs > 0) {
+        await this.delay(config.delayMs, config.signal);
+      }
+
+      const normalized = this.normalizeToken(token);
+      const delta = normalized.delta;
+
+      if (typeof normalized.output === 'string') {
+        accumulatedOutput = normalized.output;
+      } else if (delta) {
+        accumulatedOutput += delta;
+      } else if (normalized.output !== undefined) {
+        accumulatedOutput = JSON.stringify(normalized.output);
+      }
+
+      lastEdgeId = normalized.edgeId || lastEdgeId;
+      cached = normalized.cached ?? cached;
+
+      yield this.toChunk(request, {
+        delta,
+        output: accumulatedOutput,
+        latency: performance.now() - startTime,
+        edgeId: lastEdgeId,
+        cached,
+        sequence: sequence++,
+        done: false,
+      });
+    }
+
+    this.throwIfAborted(config.signal);
+
+    yield this.toChunk(request, {
       output: accumulatedOutput,
       latency: performance.now() - startTime,
-      edgeId: 'streaming',
+      edgeId: lastEdgeId,
+      cached,
+      sequence,
+      done: true,
+    });
+  }
+
+  private async *defaultTokenSource(request: InferenceRequest): AsyncGenerator<string> {
+    const words = typeof request.input === 'string'
+      ? request.input.trim().split(/\s+/).filter(Boolean)
+      : ['streaming'];
+
+    for (let index = 0; index < words.length; index++) {
+      yield `${index > 0 ? ' ' : ''}${words[index]}`;
+    }
+  }
+
+  private normalizeToken(token: StreamingToken): {
+    delta?: string;
+    output?: string | Record<string, any>;
+    edgeId?: string;
+    cached?: boolean;
+  } {
+    if (typeof token === 'string') {
+      return { delta: token };
+    }
+
+    return token;
+  }
+
+  private toChunk(
+    request: InferenceRequest,
+    chunk: {
+      delta?: string;
+      output?: string;
+      latency: number;
+      edgeId: string;
+      cached: boolean;
+      sequence: number;
+      done: boolean;
+    }
+  ): StreamingInferenceChunk {
+    return {
+      id: request.id,
+      modelId: request.modelId,
+      output: chunk.output,
+      delta: chunk.delta,
+      latency: chunk.latency,
+      edgeId: chunk.edgeId,
       timestamp: Date.now(),
-      cached: false,
+      cached: chunk.cached,
+      sequence: chunk.sequence,
+      done: chunk.done,
     };
+  }
+
+  private delay(ms: number, signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(resolve, ms);
+
+      if (signal) {
+        const abort = () => {
+          clearTimeout(timeout);
+          reject(new Error('Streaming inference aborted'));
+        };
+        signal.addEventListener('abort', abort, { once: true });
+      }
+    });
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      throw new Error('Streaming inference aborted');
+    }
   }
 }
 

@@ -181,6 +181,35 @@ describe('Advanced PRISM Features', () => {
       expect(chunks[chunks.length - 1]).toContain('What');
     });
 
+    it('should stream from an injected token source', async () => {
+      const customStreaming = new StreamingInference(undefined, {
+        edgeId: 'provider-edge',
+        source: async function* () {
+          yield 'Hello';
+          yield ' PRISM';
+          yield { delta: ' stream', cached: true };
+        },
+      });
+      const chunks = [];
+
+      for await (const chunk of customStreaming.streamInfer({
+        id: 'stream-provider',
+        modelId: 'provider-model',
+        input: 'ignored',
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.map(chunk => chunk.sequence)).toEqual([0, 1, 2, 3, 4]);
+      expect(chunks[1].delta).toBe('Hello');
+      expect(chunks[3].cached).toBe(true);
+      expect(chunks[chunks.length - 1]).toMatchObject({
+        done: true,
+        edgeId: 'provider-edge',
+        output: 'Hello PRISM stream',
+      });
+    });
+
     it('should have increasing latency as tokens stream', async () => {
       const request: InferenceRequest = {
         id: 'stream-2',
@@ -209,6 +238,50 @@ describe('Advanced PRISM Features', () => {
         expect(partial.id).toBe('stream-3');
         expect(partial.modelId).toBe('model-x');
       }
+    });
+
+    it('should allow initial chunk to be disabled', async () => {
+      const chunks = [];
+
+      for await (const chunk of streaming.streamInfer({
+        id: 'stream-no-initial',
+        modelId: 'model-x',
+        input: 'One token',
+      }, {
+        includeInitialChunk: false,
+      })) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks[0].sequence).toBe(0);
+      expect(chunks[0].delta).toBe('One');
+      expect(chunks[chunks.length - 1].done).toBe(true);
+    });
+
+    it('should abort streaming with AbortSignal', async () => {
+      const controller = new AbortController();
+      const customStreaming = new StreamingInference(undefined, {
+        source: async function* () {
+          yield 'first';
+          controller.abort();
+          yield 'second';
+        },
+      });
+      const chunks = [];
+
+      await expect(async () => {
+        for await (const chunk of customStreaming.streamInfer({
+          id: 'stream-abort',
+          modelId: 'model-x',
+          input: 'Abort',
+        }, {
+          signal: controller.signal,
+        })) {
+          chunks.push(chunk);
+        }
+      }).rejects.toThrow('Streaming inference aborted');
+      expect(chunks.some(chunk => chunk.delta === 'first')).toBe(true);
+      expect(chunks.some(chunk => chunk.delta === 'second')).toBe(false);
     });
   });
 

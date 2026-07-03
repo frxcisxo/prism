@@ -6,7 +6,7 @@
  * This script validates the public package surface after `npm run build`.
  */
 
-import { ModelShardManager, PrismCRDT } from './dist/index.js';
+import { ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
 import { InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
@@ -214,6 +214,35 @@ try {
   console.log('OK verified model sharding');
 } catch (error) {
   fail('model sharding', error);
+}
+
+try {
+  const streamer = new StreamingInference(undefined, {
+    edgeId: 'validation-stream',
+    source: async function* () {
+      yield 'PRISM';
+      yield ' streams';
+      yield { delta: ' tokens', cached: false };
+    },
+  });
+  const chunks = [];
+
+  for await (const chunk of streamer.streamInfer({
+    id: 'stream-validation',
+    modelId: model.id,
+    input: 'Validate streaming.',
+  })) {
+    chunks.push(chunk);
+  }
+
+  const final = chunks[chunks.length - 1];
+  if (!final.done || final.output !== 'PRISM streams tokens' || chunks.some((chunk, index) => chunk.sequence !== index)) {
+    throw new Error('Streaming inference smoke check returned unexpected chunks');
+  }
+
+  console.log('OK pluggable streaming inference');
+} catch (error) {
+  fail('streaming inference', error);
 }
 
 console.log('\nAll smoke checks passed.');

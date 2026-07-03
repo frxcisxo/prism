@@ -51,7 +51,12 @@ export type {
   ModelShard,
   ModelShardInput,
   ModelShardManagerDependencies,
-  ModelShardManifest
+  ModelShardManifest,
+  StreamingInferenceChunk,
+  StreamingInferenceContext,
+  StreamingInferenceOptions,
+  StreamingToken,
+  StreamingTokenSource
 } from './index-legacy';
 
 // ============================================================================

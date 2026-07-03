@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-151%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -18,6 +18,7 @@ Implemented today:
 - Multi-model ensemble strategies: voting, averaging, weighted, stacking, boosting, and fallback behavior.
 - Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and provider-native cache backends.
 - SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, and optional real ONNX Runtime Web execution.
+- Pluggable streaming inference with provider token sources, deltas, final chunks, sequence numbers, and abort support.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
@@ -26,7 +27,7 @@ Experimental / roadmap:
 
 - TensorFlow Lite, GGUF, and safetensors loaders currently expose the adapter shape; ONNX has an optional real runtime through `onnxruntime-web`.
 - Edge adapters now validate, cache, and invoke injected inference handlers; Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs cache adapters are implemented as dependency-free bindings.
-- Real LLM token streaming is still API/architecture work in progress.
+- Provider-specific LLM streaming adapters are still integration work in progress.
 
 ## 🏗️ Clean Architecture
 
@@ -496,7 +497,13 @@ console.log(`Adaptive batch size: ${stats.adaptiveBatchSize}`);
 ```typescript
 import { StreamingInference } from '@frxncisxo/prism';
 
-const streamer = new StreamingInference(prism);
+const streamer = new StreamingInference(prism, {
+  source: async function* (_request, context) {
+    yield 'Streaming';
+    yield ' from';
+    yield { delta: ` ${context.edgeId}`, cached: false };
+  },
+});
 
 // Stream tokens in real-time
 for await (const partial of streamer.streamInfer({
@@ -504,11 +511,15 @@ for await (const partial of streamer.streamInfer({
   modelId: 'llama-3.1-8b',
   input: 'Write a creative story'
 })) {
-  if (partial.output) {
-    console.log('Token:', partial.output.slice(-10)); // Show last 10 chars
+  if (partial.delta) {
+    console.log('Token:', partial.delta);
+  }
+
+  if (partial.done) {
+    console.log('Final:', partial.output);
   }
 }
-// Instant feedback as tokens are generated! 🌊
+// Emits ordered chunks with sequence, delta, latency, cached, and done metadata.
 ```
 
 ### Model Sharding (Large Models)
@@ -818,15 +829,15 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 148 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 151 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
 - [x] **Provider-native edge cache bindings** - Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs adapters
+- [x] **Pluggable streaming inference** - Provider token source contract, deltas, ordered chunks, final markers, and abort support
 - [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
 
 ### 🚧 **In Development**
 
-- [ ] **Streaming inference** - Real-time token streaming (basic structure exists, needs completion)
 - [ ] **Adaptive batching** - Dynamic batch size optimization (basic implementation exists)
 
 ### 📋 **Future Features**
@@ -852,7 +863,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **148 tests passing**:
+Tests are organized by Clean Architecture layers with **151 tests passing**:
 
 ```
 test/
