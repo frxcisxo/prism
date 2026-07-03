@@ -106,6 +106,15 @@ export interface OllamaRuntimeConfig {
   parseResponse?: (response: unknown) => string;
 }
 
+export interface ResilientInferenceRuntimeConfig {
+  primary: InferenceRuntime;
+  fallback?: InferenceRuntime;
+  maxRetries?: number;
+  timeoutMs?: number;
+  retryDelayMs?: number;
+  shouldRetry?: (error: unknown, attempt: number) => boolean;
+}
+
 export interface BatchedInference {
   requests: InferenceInput[];
   batchSize: number;
@@ -187,6 +196,15 @@ export interface InferenceRuntime {
     inputs: Record<string, any>[],
     options: InferenceOptions
   ): Promise<Record<string, any>[]>;
+}
+
+interface ResilientRuntimeSession {
+  runtime: string;
+  primary?: Record<string, any>;
+  fallback?: Record<string, any>;
+  primaryRuntime: string;
+  fallbackRuntime?: string;
+  fallbackLoadError?: string;
 }
 
 interface OnnxRuntimeModule {
@@ -287,6 +305,203 @@ export class SimulatedInferenceRuntime implements InferenceRuntime {
     if (model.id.endsWith('.gguf')) return 'gguf';
     if (model.id.endsWith('.safetensors')) return 'safetensors';
     return 'generic';
+  }
+}
+
+export class ResilientInferenceRuntime implements InferenceRuntime {
+  id = 'resilient';
+  private primary: InferenceRuntime;
+  private fallback?: InferenceRuntime;
+  private maxRetries: number;
+  private timeoutMs: number;
+  private retryDelayMs: number;
+  private shouldRetry: (error: unknown, attempt: number) => boolean;
+
+  constructor(config: ResilientInferenceRuntimeConfig) {
+    this.primary = config.primary;
+    this.fallback = config.fallback;
+    this.maxRetries = config.maxRetries ?? 1;
+    this.timeoutMs = config.timeoutMs ?? 10_000;
+    this.retryDelayMs = config.retryDelayMs ?? 0;
+    this.shouldRetry = config.shouldRetry || (() => true);
+  }
+
+  supports(model: InferenceModel): boolean {
+    return this.primary.supports(model) || Boolean(this.fallback?.supports(model));
+  }
+
+  async load(model: InferenceModel): Promise<Record<string, any>> {
+    let primarySession: Record<string, any> | undefined;
+    let fallbackSession: Record<string, any> | undefined;
+    let primaryError: unknown;
+    let fallbackLoadError: string | undefined;
+
+    if (this.primary.supports(model)) {
+      try {
+        primarySession = await this.executeWithRetry(
+          () => this.primary.load(model),
+          `load:${this.primary.id}`
+        );
+      } catch (error) {
+        primaryError = error;
+      }
+    }
+
+    if (this.fallback?.supports(model)) {
+      try {
+        fallbackSession = await this.withTimeout(
+          this.fallback.load(model),
+          `load:${this.fallback.id}`
+        );
+      } catch (error) {
+        fallbackLoadError = this.errorMessage(error);
+      }
+    }
+
+    if (!primarySession && !fallbackSession) {
+      throw new Error(
+        `Resilient runtime could not load model ${model.id}: ${this.errorMessage(primaryError || fallbackLoadError || 'unsupported')}`
+      );
+    }
+
+    return {
+      runtime: this.id,
+      primary: primarySession,
+      fallback: fallbackSession,
+      primaryRuntime: this.primary.id,
+      fallbackRuntime: this.fallback?.id,
+      fallbackLoadError,
+    } satisfies ResilientRuntimeSession;
+  }
+
+  async unload(modelId: string, session: Record<string, any>): Promise<void> {
+    const resilientSession = session as ResilientRuntimeSession;
+    await Promise.all([
+      resilientSession.primary
+        ? this.primary.unload?.(modelId, resilientSession.primary)
+        : Promise.resolve(),
+      resilientSession.fallback && this.fallback
+        ? this.fallback.unload?.(modelId, resilientSession.fallback)
+        : Promise.resolve(),
+    ]);
+  }
+
+  async infer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Promise<Record<string, any>> {
+    const resilientSession = session as ResilientRuntimeSession;
+    const errors: string[] = [];
+
+    if (resilientSession.primary) {
+      try {
+        const output = await this.executeWithRetry(
+          () => this.primary.infer(model, resilientSession.primary!, input, options),
+          `infer:${this.primary.id}`,
+          errors
+        );
+        return this.decorate(output, false, this.primary.id, errors);
+      } catch {
+        // Fall through to the fallback runtime with the retry history captured by executeWithRetry.
+      }
+    }
+
+    if (this.fallback && resilientSession.fallback) {
+      try {
+        const output = await this.withTimeout(
+          this.fallback.infer(model, resilientSession.fallback, input, options),
+          `infer:${this.fallback.id}`
+        );
+        return this.decorate(output, true, this.fallback.id, errors);
+      } catch (error) {
+        errors.push(this.errorMessage(error));
+      }
+    }
+
+    throw new Error(`Resilient inference failed for ${model.id}: ${errors.join(' | ') || 'no runtime available'}`);
+  }
+
+  async batchInfer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    inputs: Record<string, any>[],
+    options: InferenceOptions
+  ): Promise<Record<string, any>[]> {
+    return Promise.all(inputs.map(input => this.infer(model, session, input, options)));
+  }
+
+  private async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    label: string,
+    errors: string[] = []
+  ): Promise<T> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        return await this.withTimeout(operation(), label);
+      } catch (error) {
+        lastError = error;
+        errors.push(this.errorMessage(error));
+        if (attempt >= this.maxRetries || !this.shouldRetry(error, attempt + 1)) {
+          break;
+        }
+        await this.delay(this.retryDelayMs);
+      }
+    }
+
+    throw lastError;
+  }
+
+  private async withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    if (this.timeoutMs <= 0) {
+      return promise;
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error(`Runtime operation timed out after ${this.timeoutMs}ms (${label})`));
+          }, this.timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return Promise.resolve();
+    }
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private decorate(
+    output: Record<string, any>,
+    fallbackUsed: boolean,
+    runtime: string,
+    errors: string[]
+  ): Record<string, any> {
+    return {
+      ...output,
+      runtime: this.id,
+      innerRuntime: runtime,
+      fallbackUsed,
+      attempts: errors.length + 1,
+      ...(errors.length > 0 ? { errors } : {}),
+    };
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }
 

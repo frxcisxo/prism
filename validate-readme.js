@@ -17,7 +17,14 @@ import {
   signModelManifest,
   verifySignedModelManifest,
 } from './dist/index.js';
-import { CloudflareWorkersAIRuntime, HttpInferenceRuntime, InferenceEngine, OllamaRuntime, OnnxRuntimeWebRuntime } from './dist/inference.js';
+import {
+  CloudflareWorkersAIRuntime,
+  HttpInferenceRuntime,
+  InferenceEngine,
+  OllamaRuntime,
+  OnnxRuntimeWebRuntime,
+  ResilientInferenceRuntime,
+} from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
@@ -218,6 +225,59 @@ try {
   console.log('OK HTTP/OpenAI-compatible inference runtime');
 } catch (error) {
   fail('HTTP/OpenAI-compatible inference runtime', error);
+}
+
+try {
+  let primaryCalls = 0;
+  const primary = {
+    id: 'validation-primary-runtime',
+    supports: () => true,
+    load: async () => ({ runtime: 'validation-primary-runtime' }),
+    infer: async () => {
+      primaryCalls += 1;
+      if (primaryCalls === 1) {
+        throw new Error('transient validation failure');
+      }
+      return {
+        text: 'resilient:ok',
+        source: 'remote',
+        runtime: 'validation-primary-runtime',
+      };
+    },
+  };
+  const runtime = new ResilientInferenceRuntime({
+    primary,
+    maxRetries: 1,
+    timeoutMs: 100,
+  });
+  const engine = new InferenceEngine({ runtimes: [runtime] });
+
+  await engine.loadModel({
+    id: 'validation-resilient',
+    name: 'Validation Resilient Runtime',
+    version: '1.0.0',
+    format: 'remote',
+    size: 1,
+    capabilities: ['validation'],
+  });
+
+  const result = await engine.infer('validation-resilient', 'Validate resilient runtime.', {
+    cache: false,
+  });
+
+  if (
+    primaryCalls !== 2
+    || result.text !== 'resilient:ok'
+    || result.raw?.runtime !== 'resilient'
+    || result.raw?.innerRuntime !== 'validation-primary-runtime'
+    || result.raw?.attempts !== 2
+  ) {
+    throw new Error('Resilient runtime smoke check returned unexpected output');
+  }
+
+  console.log('OK resilient inference runtime');
+} catch (error) {
+  fail('resilient inference runtime', error);
 }
 
 try {

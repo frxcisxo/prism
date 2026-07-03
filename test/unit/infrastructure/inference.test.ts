@@ -7,6 +7,7 @@ import {
   InferenceEngine,
   OllamaRuntime,
   OnnxRuntimeWebRuntime,
+  ResilientInferenceRuntime,
   type InferenceConfig,
   type InferenceRuntime
 } from '../../../src/infrastructure/inference/inference';
@@ -459,6 +460,193 @@ describe('InferenceEngine', () => {
       });
       expect(diagnostics.cache.hitRate).toBe(100);
     });
+  });
+});
+
+describe('ResilientInferenceRuntime', () => {
+  const model = {
+    id: 'resilient-model',
+    name: 'Resilient Model',
+    version: '1.0.0',
+    format: 'remote' as const,
+    size: 1,
+    capabilities: ['chat'],
+  };
+
+  it('should retry transient primary inference failures', async () => {
+    const infer = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary outage'))
+      .mockResolvedValueOnce({
+        text: 'primary ok',
+        source: 'remote',
+        runtime: 'primary-runtime',
+      });
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: vi.fn(async () => ({ runtime: 'primary-runtime', session: 'primary' })),
+      infer,
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      maxRetries: 1,
+      timeoutMs: 50,
+    });
+
+    const session = await runtime.load(model);
+    const output = await runtime.infer(model, session, { normalized: 'hello' }, {});
+
+    expect(infer).toHaveBeenCalledTimes(2);
+    expect(output).toMatchObject({
+      text: 'primary ok',
+      runtime: 'resilient',
+      innerRuntime: 'primary-runtime',
+      fallbackUsed: false,
+      attempts: 2,
+      errors: ['temporary outage'],
+    });
+  });
+
+  it('should fall back when the primary runtime keeps failing', async () => {
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn(async () => {
+        throw new Error('primary down');
+      }),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: vi.fn(async () => ({ runtime: 'fallback-runtime' })),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+        runtime: 'fallback-runtime',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 1,
+      timeoutMs: 50,
+    });
+
+    const session = await runtime.load(model);
+    const output = await runtime.infer(model, session, { normalized: 'hello' }, {});
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(fallback.infer).toHaveBeenCalledTimes(1);
+    expect(output).toMatchObject({
+      text: 'fallback ok',
+      runtime: 'resilient',
+      innerRuntime: 'fallback-runtime',
+      fallbackUsed: true,
+      attempts: 3,
+    });
+    expect(output.errors).toEqual(['primary down', 'primary down']);
+  });
+
+  it('should time out slow runtime operations and use fallback', async () => {
+    const primary: InferenceRuntime = {
+      id: 'slow-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'slow-runtime' }),
+      infer: vi.fn(() => new Promise<Record<string, any>>(() => {})),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'timeout fallback',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 0,
+      timeoutMs: 1,
+    });
+
+    const session = await runtime.load(model);
+    const output = await runtime.infer(model, session, { normalized: 'hello' }, {});
+
+    expect(output).toMatchObject({
+      text: 'timeout fallback',
+      runtime: 'resilient',
+      innerRuntime: 'fallback-runtime',
+      fallbackUsed: true,
+      attempts: 2,
+    });
+    expect(output.errors[0]).toContain('timed out');
+  });
+
+  it('should work through InferenceEngine and expose resilient raw metadata', async () => {
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn()
+        .mockRejectedValueOnce(new Error('temporary engine outage'))
+        .mockResolvedValueOnce({
+          text: 'primary ok',
+          source: 'remote',
+        }),
+    };
+    const engine = new InferenceEngine({
+      runtimes: [
+        new ResilientInferenceRuntime({
+          primary,
+          maxRetries: 1,
+          timeoutMs: 50,
+        }),
+      ],
+    });
+
+    await engine.loadModel(model);
+    const result = await engine.infer('resilient-model', 'hello', { cache: false });
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      text: 'primary ok',
+      source: 'remote',
+      raw: {
+        runtime: 'resilient',
+        innerRuntime: 'primary-runtime',
+        fallbackUsed: false,
+        attempts: 2,
+      },
+    });
+  });
+
+  it('should fan out batch inference through the resilience wrapper', async () => {
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn(async (_model, _session, input) => ({
+        text: `ok:${input.normalized}`,
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      maxRetries: 0,
+      timeoutMs: 50,
+    });
+    const session = await runtime.load(model);
+
+    const outputs = await runtime.batchInfer(model, session, [
+      { normalized: 'one' },
+      { normalized: 'two' },
+    ], {});
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(outputs.map(output => output.text)).toEqual(['ok:one', 'ok:two']);
+    expect(outputs.every(output => output.runtime === 'resilient')).toBe(true);
   });
 });
 
