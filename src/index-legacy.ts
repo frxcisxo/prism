@@ -1016,33 +1016,166 @@ export const InferenceModelSchema = z.object({
 /**
  * 🚀 ADAPTIVE BATCHING - Dynamically adjusts batch size based on load and latency
  */
+export interface AdaptiveBatcherConfig {
+  initialBatchSize?: number;
+  minBatchSize?: number;
+  maxBatchSize?: number;
+  targetLatencyMs?: number;
+  latencyWindowSize?: number;
+  increaseStep?: number;
+  decreaseStep?: number;
+  errorPenalty?: number;
+}
+
+export interface AdaptiveBatchResult {
+  latencyMs: number;
+  queueDepth?: number;
+  success?: boolean;
+}
+
+export interface AdaptiveBatcherMetrics {
+  batchSize: number;
+  optimalBatchSize: number;
+  minBatchSize: number;
+  maxBatchSize: number;
+  targetLatencyMs: number;
+  averageLatency: number;
+  p95Latency: number;
+  errorRate: number;
+  loadFactor: number;
+  queuePressure: number;
+  samples: number;
+}
+
 export class AdaptiveBatcher {
-  private batchSize = 8;
+  private readonly config: Required<AdaptiveBatcherConfig>;
+  private batchSize: number;
   private latencyHistory: number[] = [];
+  private resultHistory: boolean[] = [];
   private loadFactor = 1.0;
+  private queuePressure = 0;
+
+  constructor(config: AdaptiveBatcherConfig = {}) {
+    this.config = {
+      initialBatchSize: config.initialBatchSize ?? 8,
+      minBatchSize: config.minBatchSize ?? 1,
+      maxBatchSize: config.maxBatchSize ?? 64,
+      targetLatencyMs: config.targetLatencyMs ?? 35,
+      latencyWindowSize: config.latencyWindowSize ?? 20,
+      increaseStep: config.increaseStep ?? 2,
+      decreaseStep: config.decreaseStep ?? 2,
+      errorPenalty: config.errorPenalty ?? 0.35,
+    };
+    this.batchSize = this.clampBatchSize(this.config.initialBatchSize);
+  }
 
   addLatency(latency: number): void {
-    this.latencyHistory.push(latency);
-    if (this.latencyHistory.length > 20) {
-      this.latencyHistory.shift();
+    this.recordResult({ latencyMs: latency, success: true });
+  }
+
+  recordResult(result: AdaptiveBatchResult): void {
+    if (!Number.isFinite(result.latencyMs) || result.latencyMs < 0) {
+      throw new Error('Latency must be a non-negative finite number');
     }
 
-    // Adjust batch size based on recent latency
-    const avgLatency = this.latencyHistory.reduce((a, b) => a + b, 0) / this.latencyHistory.length;
+    this.latencyHistory.push(result.latencyMs);
+    this.trimWindow(this.latencyHistory);
 
-    if (avgLatency < 10) {
-      this.batchSize = Math.min(this.batchSize + 2, 64); // Increase batch size
-    } else if (avgLatency > 50) {
-      this.batchSize = Math.max(this.batchSize - 1, 1); // Decrease batch size
+    this.resultHistory.push(result.success !== false);
+    this.trimWindow(this.resultHistory);
+
+    if (typeof result.queueDepth === 'number') {
+      this.setQueueDepth(result.queueDepth);
     }
+
+    this.recalculateBatchSize();
   }
 
   getOptimalBatchSize(): number {
-    return Math.floor(this.batchSize * this.loadFactor);
+    const pressureMultiplier = 1 + this.queuePressure;
+    const adjusted = Math.floor(this.batchSize * this.loadFactor * pressureMultiplier);
+    return this.clampBatchSize(adjusted);
   }
 
   setLoadFactor(factor: number): void {
     this.loadFactor = Math.max(0.1, Math.min(factor, 2.0));
+  }
+
+  setQueueDepth(queueDepth: number): void {
+    if (!Number.isFinite(queueDepth) || queueDepth < 0) {
+      throw new Error('Queue depth must be a non-negative finite number');
+    }
+
+    this.queuePressure = Math.min(1, queueDepth / Math.max(1, this.config.maxBatchSize * 2));
+  }
+
+  reset(): void {
+    this.batchSize = this.clampBatchSize(this.config.initialBatchSize);
+    this.latencyHistory = [];
+    this.resultHistory = [];
+    this.loadFactor = 1.0;
+    this.queuePressure = 0;
+  }
+
+  getMetrics(): AdaptiveBatcherMetrics {
+    const latencies = [...this.latencyHistory].sort((a, b) => a - b);
+    const averageLatency = this.average(this.latencyHistory);
+    const p95Index = latencies.length === 0 ? 0 : Math.ceil(latencies.length * 0.95) - 1;
+    const failed = this.resultHistory.filter(success => !success).length;
+
+    return {
+      batchSize: this.batchSize,
+      optimalBatchSize: this.getOptimalBatchSize(),
+      minBatchSize: this.config.minBatchSize,
+      maxBatchSize: this.config.maxBatchSize,
+      targetLatencyMs: this.config.targetLatencyMs,
+      averageLatency,
+      p95Latency: latencies[p95Index] ?? 0,
+      errorRate: this.resultHistory.length > 0 ? failed / this.resultHistory.length : 0,
+      loadFactor: this.loadFactor,
+      queuePressure: this.queuePressure,
+      samples: this.latencyHistory.length,
+    };
+  }
+
+  private recalculateBatchSize(): void {
+    const metrics = this.getMetrics();
+    const latencyRatio = metrics.averageLatency / this.config.targetLatencyMs;
+
+    if (metrics.errorRate > 0) {
+      const penalty = Math.ceil(this.config.decreaseStep * (1 + metrics.errorRate / this.config.errorPenalty));
+      this.batchSize = this.clampBatchSize(this.batchSize - penalty);
+      return;
+    }
+
+    if (metrics.samples < 3) {
+      return;
+    }
+
+    if (latencyRatio < 0.65 && metrics.p95Latency < this.config.targetLatencyMs) {
+      this.batchSize = this.clampBatchSize(this.batchSize + this.config.increaseStep);
+    } else if (latencyRatio > 1.15 || metrics.p95Latency > this.config.targetLatencyMs * 1.35) {
+      this.batchSize = this.clampBatchSize(this.batchSize - this.config.decreaseStep);
+    }
+  }
+
+  private average(values: number[]): number {
+    return values.length === 0
+      ? 0
+      : values.reduce((sum, value) => sum + value, 0) / values.length;
+  }
+
+  private trimWindow<T>(items: T[]): void {
+    while (items.length > this.config.latencyWindowSize) {
+      items.shift();
+    }
+  }
+
+  private clampBatchSize(value: number): number {
+    return Math.max(
+      this.config.minBatchSize,
+      Math.min(this.config.maxBatchSize, Math.round(value))
+    );
   }
 }
 

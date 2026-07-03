@@ -6,7 +6,7 @@
  * This script validates the public package surface after `npm run build`.
  */
 
-import { ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
+import { AdaptiveBatcher, ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
 import { InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
@@ -243,6 +243,25 @@ try {
   console.log('OK pluggable streaming inference');
 } catch (error) {
   fail('streaming inference', error);
+}
+
+try {
+  const batcher = new AdaptiveBatcher({
+    initialBatchSize: 8,
+    targetLatencyMs: 35,
+  });
+  batcher.recordResult({ latencyMs: 12, queueDepth: 64, success: true });
+  batcher.recordResult({ latencyMs: 16, queueDepth: 64, success: true });
+  batcher.recordResult({ latencyMs: 18, queueDepth: 64, success: true });
+  const metrics = batcher.getMetrics();
+
+  if (metrics.samples !== 3 || metrics.queuePressure <= 0 || metrics.optimalBatchSize <= 8) {
+    throw new Error('Adaptive batching smoke check returned unexpected metrics');
+  }
+
+  console.log('OK adaptive batching policy');
+} catch (error) {
+  fail('adaptive batching', error);
 }
 
 console.log('\nAll smoke checks passed.');

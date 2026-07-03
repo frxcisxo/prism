@@ -143,13 +143,62 @@ describe('Advanced PRISM Features', () => {
 
     it('should ensure load factor stays within bounds', () => {
       batcher.setLoadFactor(5.0); // Try to set above max
-      expect(batcher.getOptimalBatchSize()).toBeLessThanOrEqual(64 * 2); // Max factor 2.0
+      expect(batcher.getOptimalBatchSize()).toBeLessThanOrEqual(64);
 
       batcher.setLoadFactor(-1.0); // Try to set below min (clamped to 0.1)
-      // With load factor 0.1 and default batch 8, we get 8 * 0.1 = 0.8 -> floor = 0
-      // So this is actually expected behavior. Let's verify clamping works.
-      const size = batcher.getOptimalBatchSize();
-      expect(size).toBeLessThanOrEqual(1); // With 0.1 factor, we get effectively 0 or 1
+      expect(batcher.getOptimalBatchSize()).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should expose adaptive metrics', () => {
+      batcher.recordResult({ latencyMs: 10, success: true, queueDepth: 12 });
+      batcher.recordResult({ latencyMs: 20, success: true, queueDepth: 12 });
+      batcher.recordResult({ latencyMs: 30, success: true, queueDepth: 12 });
+
+      const metrics = batcher.getMetrics();
+
+      expect(metrics.samples).toBe(3);
+      expect(metrics.averageLatency).toBe(20);
+      expect(metrics.p95Latency).toBe(30);
+      expect(metrics.queuePressure).toBeGreaterThan(0);
+      expect(metrics.optimalBatchSize).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should reduce batch size after failed results', () => {
+      const customBatcher = new AdaptiveBatcher({
+        initialBatchSize: 16,
+        targetLatencyMs: 50,
+      });
+      const initialSize = customBatcher.getOptimalBatchSize();
+
+      customBatcher.recordResult({ latencyMs: 20, success: false });
+
+      expect(customBatcher.getOptimalBatchSize()).toBeLessThan(initialSize);
+      expect(customBatcher.getMetrics().errorRate).toBeGreaterThan(0);
+    });
+
+    it('should increase effective batch size under queue pressure', () => {
+      const customBatcher = new AdaptiveBatcher({
+        initialBatchSize: 8,
+        targetLatencyMs: 50,
+      });
+      const initialSize = customBatcher.getOptimalBatchSize();
+
+      customBatcher.setQueueDepth(128);
+
+      expect(customBatcher.getOptimalBatchSize()).toBeGreaterThan(initialSize);
+    });
+
+    it('should reset adaptive state', () => {
+      batcher.recordResult({ latencyMs: 5, queueDepth: 100 });
+      batcher.setLoadFactor(2);
+      batcher.reset();
+
+      expect(batcher.getOptimalBatchSize()).toBe(8);
+      expect(batcher.getMetrics()).toMatchObject({
+        samples: 0,
+        queuePressure: 0,
+        loadFactor: 1,
+      });
     });
   });
 

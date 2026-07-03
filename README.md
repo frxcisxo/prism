@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-151%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-155%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -20,6 +20,7 @@ Implemented today:
 - SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, and optional real ONNX Runtime Web execution.
 - Pluggable streaming inference with provider token sources, deltas, final chunks, sequence numbers, and abort support.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
+- Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
 
@@ -465,6 +466,7 @@ PRISM includes production-ready optimizations for maximum performance in 2026.
 
 ```typescript
 import Prism from '@frxncisxo/prism';
+import { AdaptiveBatcher } from '@frxncisxo/prism';
 
 const prism = new Prism({
   nodeId: 'optimized-node',
@@ -490,6 +492,10 @@ const result2 = await prism.infer({
 const stats = prism.getStats();
 console.log(`Cache utilization: ${stats.cacheStats.utilization.toFixed(1)}%`);
 console.log(`Adaptive batch size: ${stats.adaptiveBatchSize}`);
+
+const batcher = new AdaptiveBatcher({ targetLatencyMs: 35 });
+batcher.recordResult({ latencyMs: 18, queueDepth: 32, success: true });
+console.log(batcher.getMetrics());
 ```
 
 ### Streaming Inference (Real-time Feedback)
@@ -787,7 +793,7 @@ import {
   Prism,                   // Main orchestrator (basic structure)
   StreamingInference,      // Real-time streaming (basic implementation)
   ModelShardManager,       // Verified local/remote model shard loading
-  AdaptiveBatcher,         // Dynamic batching (basic implementation)
+  AdaptiveBatcher,         // Configurable dynamic batching policy
   ConnectionPool,          // Connection management (basic structure)
   CRDTSync,               // Conflict resolution (basic structure)
 
@@ -829,16 +835,17 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 151 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 155 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
 - [x] **Provider-native edge cache bindings** - Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs adapters
 - [x] **Pluggable streaming inference** - Provider token source contract, deltas, ordered chunks, final markers, and abort support
 - [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
+- [x] **Adaptive batching policy** - Latency window, queue pressure, error penalties, min/max bounds, and metrics
 
 ### 🚧 **In Development**
 
-- [ ] **Adaptive batching** - Dynamic batch size optimization (basic implementation exists)
+- [ ] **Provider-specific runtime adapters** - Transformers.js, Workers AI, TensorFlow Lite, and GGUF execution adapters
 
 ### 📋 **Future Features**
 
@@ -863,7 +870,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **151 tests passing**:
+Tests are organized by Clean Architecture layers with **155 tests passing**:
 
 ```
 test/
