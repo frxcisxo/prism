@@ -136,6 +136,40 @@ interface LoadedModel {
   runtime: InferenceRuntime;
 }
 
+export interface LoadedModelDiagnostic {
+  modelId: string;
+  modelName: string;
+  format: string;
+  runtime: string;
+  loadedAt: number;
+  ageMs: number;
+  source: InferenceSource | 'unknown';
+  capabilities: string[];
+  session: Record<string, any>;
+}
+
+export interface RuntimeDiagnostic {
+  runtime: string;
+  loadedModels: number;
+  modelIds: string[];
+  formats: string[];
+  sources: Array<InferenceSource | 'unknown'>;
+}
+
+export interface InferenceEngineDiagnostics {
+  status: 'ready' | 'idle';
+  generatedAt: number;
+  stats: ReturnType<InferenceEngine['getStats']>;
+  cache: {
+    entries: number;
+    hits: number;
+    misses: number;
+    hitRate: number;
+  };
+  models: LoadedModelDiagnostic[];
+  runtimes: RuntimeDiagnostic[];
+}
+
 export interface InferenceRuntime {
   id: string;
   supports(model: InferenceModel): boolean;
@@ -1192,6 +1226,22 @@ export class ModelLoader {
     return this.loadedModels.get(modelId)?.runtime;
   }
 
+  getLoadedModelDiagnostics(): LoadedModelDiagnostic[] {
+    const now = Date.now();
+
+    return Array.from(this.loadedModels.values()).map(loaded => ({
+      modelId: loaded.model.id,
+      modelName: loaded.model.name,
+      format: loaded.format,
+      runtime: loaded.runtime.id,
+      loadedAt: loaded.loadedAt,
+      ageMs: Math.max(0, now - loaded.loadedAt),
+      source: this.inferSessionSource(loaded.session),
+      capabilities: [...(loaded.model.capabilities || [])],
+      session: this.sanitizeSession(loaded.session),
+    }));
+  }
+
   listLoaded(): string[] {
     return Array.from(this.loadedModels.keys());
   }
@@ -1205,6 +1255,77 @@ export class ModelLoader {
     await loaded.runtime.unload?.(modelId, loaded.session);
     this.loadedModels.delete(modelId);
     return { modelId, status: 'unloaded' };
+  }
+
+  private inferSessionSource(session: Record<string, any>): InferenceSource | 'unknown' {
+    if (session.runtime === 'simulated') {
+      return 'cpu';
+    }
+    if (
+      session.runtime === 'http'
+      || session.runtime === 'cloudflare-workers-ai'
+      || session.runtime === 'ollama'
+      || typeof session.endpoint === 'string'
+      || typeof session.host === 'string'
+    ) {
+      return 'remote';
+    }
+    if (session.runtime === 'onnxruntime-web') {
+      return 'cpu';
+    }
+    return 'unknown';
+  }
+
+  private sanitizeSession(session: Record<string, any>): Record<string, any> {
+    const safe: Record<string, any> = {};
+    const secretPattern = /(authorization|api.?key|token|secret|password|credential)/i;
+
+    for (const [key, value] of Object.entries(session)) {
+      if (secretPattern.test(key)) {
+        safe[key] = '[redacted]';
+        continue;
+      }
+
+      if (key === 'headers' && value && typeof value === 'object') {
+        safe[key] = this.sanitizeHeaders(value as Record<string, any>);
+        continue;
+      }
+
+      if (this.isPrimitiveDiagnosticValue(value)) {
+        safe[key] = value;
+        continue;
+      }
+
+      if (Array.isArray(value) && value.every(item => this.isPrimitiveDiagnosticValue(item))) {
+        safe[key] = [...value];
+        continue;
+      }
+
+      if (value && typeof value === 'object') {
+        safe[key] = `[${value.constructor?.name || 'Object'}]`;
+      }
+    }
+
+    return safe;
+  }
+
+  private sanitizeHeaders(headers: Record<string, any>): Record<string, any> {
+    const safe: Record<string, any> = {};
+    const secretPattern = /(authorization|api.?key|token|secret|password|credential)/i;
+
+    for (const [key, value] of Object.entries(headers)) {
+      safe[key] = secretPattern.test(key) ? '[redacted]' : value;
+    }
+
+    return safe;
+  }
+
+  private isPrimitiveDiagnosticValue(value: unknown): boolean {
+    return value === null
+      || value === undefined
+      || typeof value === 'string'
+      || typeof value === 'number'
+      || typeof value === 'boolean';
   }
 }
 
@@ -1332,6 +1453,54 @@ export class InferenceEngine {
 
   listLoadedModels(): string[] {
     return this.loader.listLoaded();
+  }
+
+  getLoadedModelDiagnostics(): LoadedModelDiagnostic[] {
+    return this.loader.getLoadedModelDiagnostics();
+  }
+
+  getRuntimeDiagnostics(): RuntimeDiagnostic[] {
+    const groups = new Map<string, RuntimeDiagnostic>();
+
+    for (const model of this.getLoadedModelDiagnostics()) {
+      const existing = groups.get(model.runtime) || {
+        runtime: model.runtime,
+        loadedModels: 0,
+        modelIds: [],
+        formats: [],
+        sources: [],
+      };
+
+      existing.loadedModels += 1;
+      existing.modelIds.push(model.modelId);
+      if (!existing.formats.includes(model.format)) {
+        existing.formats.push(model.format);
+      }
+      if (!existing.sources.includes(model.source)) {
+        existing.sources.push(model.source);
+      }
+      groups.set(model.runtime, existing);
+    }
+
+    return Array.from(groups.values());
+  }
+
+  getDiagnostics(): InferenceEngineDiagnostics {
+    const models = this.getLoadedModelDiagnostics();
+
+    return {
+      status: models.length > 0 ? 'ready' : 'idle',
+      generatedAt: Date.now(),
+      stats: this.getStats(),
+      cache: {
+        entries: this.cache.size,
+        hits: this.cacheHits,
+        misses: this.cacheMisses,
+        hitRate: this.totalRequests > 0 ? (this.cacheHits / this.totalRequests) * 100 : 0,
+      },
+      models,
+      runtimes: this.getRuntimeDiagnostics(),
+    };
   }
 
   private buildCacheKey(

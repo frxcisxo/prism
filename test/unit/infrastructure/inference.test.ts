@@ -354,6 +354,112 @@ describe('InferenceEngine', () => {
       expect(stats.averageLatency).toBeGreaterThan(0);
     });
   });
+
+  describe('diagnostics', () => {
+    it('should report idle diagnostics before models are loaded', () => {
+      const diagnostics = engine.getDiagnostics();
+
+      expect(diagnostics).toMatchObject({
+        status: 'idle',
+        stats: {
+          loadedModels: 0,
+          totalRequests: 0,
+        },
+        cache: {
+          entries: 0,
+          hits: 0,
+          misses: 0,
+          hitRate: 0,
+        },
+        models: [],
+        runtimes: [],
+      });
+      expect(diagnostics.generatedAt).toEqual(expect.any(Number));
+    });
+
+    it('should report loaded model and runtime diagnostics without leaking secrets', async () => {
+      const runtime: InferenceRuntime = {
+        id: 'diagnostic-runtime',
+        supports: () => true,
+        load: async () => ({
+          runtime: 'diagnostic-runtime',
+          endpoint: 'https://runtime.example/infer',
+          headers: {
+            authorization: 'Bearer secret',
+            'x-safe-header': 'visible',
+          },
+          apiToken: 'secret-token',
+          complexSession: { nested: true },
+        }),
+        infer: async (_model, _session, input) => ({
+          text: `diagnostic:${input.normalized}`,
+          source: 'remote',
+          runtime: 'diagnostic-runtime',
+        }),
+      };
+      const customEngine = new InferenceEngine({ runtimes: [runtime] });
+
+      await customEngine.loadModel({
+        id: 'diagnostic-model',
+        name: 'Diagnostic Model',
+        version: '1.0.0',
+        format: 'remote',
+        size: 1,
+        capabilities: ['chat', 'diagnostics'],
+      });
+      await customEngine.infer('diagnostic-model', 'diagnose', { cache: true });
+      await customEngine.infer('diagnostic-model', 'diagnose', { cache: true });
+
+      const modelDiagnostics = customEngine.getLoadedModelDiagnostics();
+      const runtimeDiagnostics = customEngine.getRuntimeDiagnostics();
+      const diagnostics = customEngine.getDiagnostics();
+
+      expect(modelDiagnostics).toHaveLength(1);
+      expect(modelDiagnostics[0]).toMatchObject({
+        modelId: 'diagnostic-model',
+        modelName: 'Diagnostic Model',
+        format: 'remote',
+        runtime: 'diagnostic-runtime',
+        source: 'remote',
+        capabilities: ['chat', 'diagnostics'],
+        session: {
+          runtime: 'diagnostic-runtime',
+          endpoint: 'https://runtime.example/infer',
+          headers: {
+            authorization: '[redacted]',
+            'x-safe-header': 'visible',
+          },
+          apiToken: '[redacted]',
+          complexSession: '[Object]',
+        },
+      });
+      expect(modelDiagnostics[0].ageMs).toBeGreaterThanOrEqual(0);
+      expect(runtimeDiagnostics).toEqual([
+        {
+          runtime: 'diagnostic-runtime',
+          loadedModels: 1,
+          modelIds: ['diagnostic-model'],
+          formats: ['remote'],
+          sources: ['remote'],
+        },
+      ]);
+      expect(diagnostics).toMatchObject({
+        status: 'ready',
+        stats: {
+          loadedModels: 1,
+          totalRequests: 1,
+          cacheHits: 1,
+          cacheMisses: 1,
+        },
+        cache: {
+          entries: 1,
+          hits: 1,
+          misses: 1,
+        },
+      });
+      expect(diagnostics.cache.hitRate).toBe(100);
+    });
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {

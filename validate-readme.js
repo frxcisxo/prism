@@ -65,12 +65,16 @@ try {
 
   const single = await engine.infer(model.id, 'Validate inference engine.');
   const batch = await engine.batchInfer(model.id, ['one', 'two', 'three']);
+  const diagnostics = engine.getDiagnostics();
 
   if (!single.text || batch.length !== 3) {
     throw new Error('Inference engine returned unexpected output');
   }
+  if (diagnostics.status !== 'ready' || diagnostics.models[0]?.runtime !== 'simulated') {
+    throw new Error('Inference diagnostics did not report the loaded simulated runtime');
+  }
 
-  console.log('OK InferenceEngine infer/batchInfer');
+  console.log('OK InferenceEngine infer/batchInfer/diagnostics');
 } catch (error) {
   fail('InferenceEngine', error);
 }
@@ -154,9 +158,13 @@ try {
     cache: false,
     maxTokens: 16,
   });
+  const diagnostics = engine.getDiagnostics();
 
   if (calls !== 1 || result.text !== 'remote:Validate HTTP runtime.' || result.source !== 'remote') {
     throw new Error('HTTP runtime smoke check returned unexpected output');
+  }
+  if (diagnostics.models[0]?.session.headers.authorization !== '[redacted]') {
+    throw new Error('Inference diagnostics leaked HTTP authorization header');
   }
 
   console.log('OK HTTP/OpenAI-compatible inference runtime');

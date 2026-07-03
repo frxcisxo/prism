@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-173%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-175%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -21,6 +21,7 @@ Implemented today:
 - Pluggable streaming inference with provider token sources, deltas, final chunks, sequence numbers, and abort support.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
+- Runtime diagnostics with loaded model health, runtime grouping, cache counters, and redacted session metadata.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
 
@@ -407,6 +408,35 @@ const result = await engine.infer('local-llama', 'Explain CRDTs in one sentence.
 ```
 
 For custom Ollama-compatible gateways, inject `buildRequest` and `parseResponse` while keeping PRISM's cache, batching, and model lifecycle unchanged.
+
+### Runtime Diagnostics
+
+Use diagnostics to inspect loaded models, active runtimes, cache counters, and sanitized session metadata without reaching into private engine state.
+
+```typescript
+import { InferenceEngine, OllamaRuntime } from '@frxncisxo/prism/inference';
+
+const engine = new InferenceEngine({
+  runtimes: [new OllamaRuntime()],
+});
+
+await engine.loadModel({
+  id: 'local-llama',
+  name: 'Local Llama',
+  version: '1.0.0',
+  format: 'ollama',
+  size: 1,
+  capabilities: ['chat'],
+  metadata: { model: 'llama3.2' },
+});
+
+const diagnostics = engine.getDiagnostics();
+
+console.log(diagnostics.status); // "ready"
+console.log(diagnostics.runtimes[0].runtime); // "ollama"
+```
+
+`getLoadedModelDiagnostics()` redacts sensitive fields such as authorization headers, API keys, tokens, and credentials before returning session metadata.
 
 ### Batch Inference (Higher Throughput)
 
@@ -954,7 +984,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 173 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 175 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -964,6 +994,7 @@ await prism.deployModel({
 - [x] **Pluggable streaming inference** - Provider token source contract, deltas, ordered chunks, final markers, and abort support
 - [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
 - [x] **Adaptive batching policy** - Latency window, queue pressure, error penalties, min/max bounds, and metrics
+- [x] **Runtime diagnostics** - Loaded model health, runtime grouping, cache counters, and redacted session metadata
 
 ### 🚧 **In Development**
 
@@ -992,7 +1023,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **173 tests passing**:
+Tests are organized by Clean Architecture layers with **175 tests passing**:
 
 ```
 test/
