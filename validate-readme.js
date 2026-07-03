@@ -7,7 +7,7 @@
  */
 
 import { AdaptiveBatcher, ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
-import { HttpInferenceRuntime, InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
+import { CloudflareWorkersAIRuntime, HttpInferenceRuntime, InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
@@ -162,6 +162,51 @@ try {
   console.log('OK HTTP/OpenAI-compatible inference runtime');
 } catch (error) {
   fail('HTTP/OpenAI-compatible inference runtime', error);
+}
+
+try {
+  let calls = 0;
+  const runtime = new CloudflareWorkersAIRuntime({
+    ai: {
+      run: async (remoteModel, input, options) => {
+        calls += 1;
+        if (remoteModel !== '@cf/meta/llama-3.1-8b-instruct') {
+          throw new Error('Workers AI runtime selected the wrong remote model');
+        }
+        if (input.prompt !== 'Validate Workers AI runtime.' || options.gateway.id !== 'validation-gateway') {
+          throw new Error('Workers AI runtime sent an unexpected binding request');
+        }
+        return {
+          response: `cf:${input.prompt}`,
+        };
+      },
+    },
+    gatewayId: 'validation-gateway',
+  });
+  const engine = new InferenceEngine({ runtimes: [runtime] });
+  await engine.loadModel({
+    id: 'validation-workers-ai',
+    name: 'Validation Workers AI',
+    version: '1.0.0',
+    format: 'remote',
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      runtime: 'cloudflare-workers-ai',
+      remoteModel: '@cf/meta/llama-3.1-8b-instruct',
+    },
+  });
+  const result = await engine.infer('validation-workers-ai', 'Validate Workers AI runtime.', {
+    cache: false,
+  });
+
+  if (calls !== 1 || result.text !== 'cf:Validate Workers AI runtime.' || result.raw?.mode !== 'binding') {
+    throw new Error('Workers AI runtime smoke check returned unexpected output');
+  }
+
+  console.log('OK Cloudflare Workers AI runtime');
+} catch (error) {
+  fail('Cloudflare Workers AI runtime', error);
 }
 
 try {

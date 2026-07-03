@@ -68,6 +68,30 @@ export interface HttpInferenceRuntimeConfig {
   parseResponse?: (response: unknown) => string;
 }
 
+export interface CloudflareWorkersAIBinding {
+  run(
+    model: string,
+    input: Record<string, any>,
+    options?: Record<string, any>
+  ): Promise<unknown>;
+}
+
+export interface CloudflareWorkersAIConfig {
+  ai?: CloudflareWorkersAIBinding;
+  accountId?: string;
+  apiToken?: string;
+  gatewayId?: string;
+  baseUrl?: string;
+  headers?: Record<string, string>;
+  fetch?: typeof fetch;
+  buildInput?: (
+    model: InferenceModel,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ) => Record<string, any>;
+  parseResponse?: (response: unknown) => string;
+}
+
 export interface BatchedInference {
   requests: InferenceInput[];
   batchSize: number;
@@ -702,6 +726,202 @@ export class HttpInferenceRuntime implements InferenceRuntime {
   private errorPreview(payload: unknown, fallback: string): string {
     const data = payload as Record<string, any>;
     const message = data?.error?.message || data?.message || fallback;
+    return String(message).slice(0, 240);
+  }
+}
+
+export class CloudflareWorkersAIRuntime implements InferenceRuntime {
+  id = 'cloudflare-workers-ai';
+
+  constructor(private readonly config: CloudflareWorkersAIConfig = {}) {}
+
+  supports(model: InferenceModel): boolean {
+    const runtime = model.metadata?.runtime || model.metadata?.provider;
+    const remoteModel = this.resolveModelName(model, false);
+
+    return runtime === this.id
+      || runtime === 'workers-ai'
+      || model.metadata?.cloudflare === true
+      || (model.format === 'remote' && typeof remoteModel === 'string' && remoteModel.startsWith('@cf/'));
+  }
+
+  async load(model: InferenceModel): Promise<Record<string, any>> {
+    const remoteModel = this.resolveModelName(model);
+
+    return {
+      runtime: this.id,
+      mode: this.config.ai ? 'binding' : 'rest',
+      remoteModel,
+      gatewayId: model.metadata?.gatewayId || this.config.gatewayId,
+    };
+  }
+
+  async infer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Promise<Record<string, any>> {
+    const remoteModel = String(session.remoteModel || this.resolveModelName(model));
+    const payload = this.config.buildInput
+      ? this.config.buildInput(model, input, options)
+      : this.buildWorkersAIInput(model, input, options);
+    const providerOptions = this.buildProviderOptions(session);
+    const response = this.config.ai
+      ? await this.config.ai.run(remoteModel, payload, providerOptions)
+      : await this.runViaRest(model, remoteModel, payload, providerOptions);
+    const outputText = this.config.parseResponse
+      ? this.config.parseResponse(response)
+      : this.parseWorkersAIResponse(response);
+
+    return {
+      text: outputText,
+      response,
+      request: payload,
+      remoteModel,
+      source: 'remote',
+      runtime: this.id,
+      mode: this.config.ai ? 'binding' : 'rest',
+    };
+  }
+
+  async batchInfer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    inputs: Record<string, any>[],
+    options: InferenceOptions
+  ): Promise<Record<string, any>[]> {
+    return Promise.all(inputs.map(input => this.infer(model, session, input, options)));
+  }
+
+  private async runViaRest(
+    model: InferenceModel,
+    remoteModel: string,
+    payload: Record<string, any>,
+    providerOptions: Record<string, any> | undefined
+  ): Promise<unknown> {
+    const fetcher = this.config.fetch || globalThis.fetch;
+    if (!fetcher) {
+      throw new Error('fetch is required for CloudflareWorkersAIRuntime REST mode');
+    }
+
+    const accountId = model.metadata?.accountId || this.config.accountId;
+    if (typeof accountId !== 'string' || accountId.length === 0) {
+      throw new Error(`Cloudflare Workers AI model ${model.id} requires metadata.accountId or runtime accountId`);
+    }
+
+    const apiToken = model.metadata?.apiToken || this.config.apiToken;
+    if (typeof apiToken !== 'string' || apiToken.length === 0) {
+      throw new Error(`Cloudflare Workers AI model ${model.id} requires metadata.apiToken or runtime apiToken`);
+    }
+
+    const endpoint = this.buildRestEndpoint(accountId, remoteModel);
+    const response = await fetcher(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiToken}`,
+        'content-type': 'application/json',
+        ...(providerOptions?.gateway?.id ? { 'cf-aig-gateway-id': providerOptions.gateway.id } : {}),
+        ...(this.config.headers || {}),
+        ...(model.metadata?.headers || {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    const json = text ? this.parseJson(text, endpoint) : {};
+
+    if (!response.ok) {
+      throw new Error(`Cloudflare Workers AI inference failed for ${model.id}: ${response.status} ${this.errorPreview(json, text)}`);
+    }
+
+    return json;
+  }
+
+  private resolveModelName(model: InferenceModel, required = true): string | undefined {
+    const remoteModel = model.metadata?.remoteModel || model.metadata?.model || model.metadata?.workersAIModel || model.id;
+    if (typeof remoteModel === 'string' && remoteModel.length > 0) {
+      return remoteModel;
+    }
+    if (required) {
+      throw new Error(`Cloudflare Workers AI model ${model.id} requires metadata.remoteModel or metadata.model`);
+    }
+    return undefined;
+  }
+
+  private buildWorkersAIInput(
+    model: InferenceModel,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Record<string, any> {
+    const base = Array.isArray(input.messages)
+      ? { messages: input.messages }
+      : { prompt: input.prompt || input.text || input.normalized || JSON.stringify(input) };
+
+    return {
+      ...base,
+      ...(options.temperature ?? model.metadata?.temperature ? { temperature: options.temperature ?? model.metadata?.temperature } : {}),
+      ...(options.maxTokens ?? model.metadata?.maxTokens ? { max_tokens: options.maxTokens ?? model.metadata?.maxTokens } : {}),
+      ...(model.metadata?.input || {}),
+    };
+  }
+
+  private buildProviderOptions(session: Record<string, any>): Record<string, any> | undefined {
+    if (!session.gatewayId) {
+      return undefined;
+    }
+
+    return {
+      gateway: {
+        id: session.gatewayId,
+      },
+    };
+  }
+
+  private buildRestEndpoint(accountId: string, remoteModel: string): string {
+    const baseUrl = (this.config.baseUrl || 'https://api.cloudflare.com/client/v4').replace(/\/$/, '');
+    const modelPath = remoteModel.replace(/^\//, '');
+    return `${baseUrl}/accounts/${accountId}/ai/run/${modelPath}`;
+  }
+
+  private parseJson(text: string, endpoint: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`Cloudflare Workers AI endpoint ${endpoint} returned invalid JSON`);
+    }
+  }
+
+  private parseWorkersAIResponse(payload: unknown): string {
+    const data = payload as Record<string, any>;
+    const result = data.result && typeof data.result === 'object'
+      ? data.result as Record<string, any>
+      : undefined;
+    const firstChoice = Array.isArray(data.choices)
+      ? data.choices[0]
+      : Array.isArray(result?.choices)
+        ? result.choices[0]
+        : undefined;
+    const content = data.response
+      || data.text
+      || data.output_text
+      || data.generated_text
+      || result?.response
+      || result?.text
+      || result?.output_text
+      || firstChoice?.message?.content
+      || firstChoice?.text;
+
+    if (typeof content !== 'string') {
+      throw new Error('Cloudflare Workers AI response did not include text output');
+    }
+
+    return content;
+  }
+
+  private errorPreview(payload: unknown, fallback: string): string {
+    const data = payload as Record<string, any>;
+    const errors = Array.isArray(data?.errors) ? data.errors : [];
+    const message = errors[0]?.message || data?.error?.message || data?.message || fallback;
     return String(message).slice(0, 240);
   }
 }

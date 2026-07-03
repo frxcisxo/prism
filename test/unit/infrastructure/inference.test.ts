@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import {
   ModelLoader,
+  CloudflareWorkersAIRuntime,
   HttpInferenceRuntime,
   InferenceEngine,
   OnnxRuntimeWebRuntime,
@@ -782,5 +783,155 @@ describe('HttpInferenceRuntime', () => {
         status: 200,
       },
     });
+  });
+});
+
+describe('CloudflareWorkersAIRuntime', () => {
+  const workersModel = {
+    id: 'cf-chat',
+    name: 'Cloudflare Chat',
+    version: '1.0.0',
+    format: 'remote' as const,
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      runtime: 'cloudflare-workers-ai',
+      remoteModel: '@cf/meta/llama-3.1-8b-instruct',
+    },
+  };
+
+  it('should support Cloudflare Workers AI models without hijacking generic remote models', () => {
+    const runtime = new CloudflareWorkersAIRuntime();
+
+    expect(runtime.supports(workersModel)).toBe(true);
+    expect(runtime.supports({
+      id: '@cf/meta/llama-3.1-8b-instruct',
+      name: 'Implicit Workers AI',
+      version: '1.0.0',
+      format: 'remote',
+      size: 1,
+      capabilities: [],
+    })).toBe(true);
+    expect(runtime.supports({
+      id: 'remote-chat',
+      name: 'Remote Chat',
+      version: '1.0.0',
+      format: 'remote',
+      size: 1,
+      capabilities: [],
+      metadata: { remoteModel: 'openai/gpt-4.1-mini' },
+    })).toBe(false);
+  });
+
+  it('should run inference through the native Workers AI binding', async () => {
+    const ai = {
+      run: vi.fn(async () => ({
+        response: 'workers binding result',
+      })),
+    };
+    const runtime = new CloudflareWorkersAIRuntime({
+      ai,
+      gatewayId: 'default',
+    });
+
+    const session = await runtime.load(workersModel);
+    const output = await runtime.infer(workersModel, session, {
+      text: 'Hello edge',
+    }, {
+      temperature: 0.3,
+      maxTokens: 64,
+    });
+
+    expect(ai.run).toHaveBeenCalledWith('@cf/meta/llama-3.1-8b-instruct', {
+      prompt: 'Hello edge',
+      temperature: 0.3,
+      max_tokens: 64,
+    }, {
+      gateway: { id: 'default' },
+    });
+    expect(output).toMatchObject({
+      text: 'workers binding result',
+      source: 'remote',
+      runtime: 'cloudflare-workers-ai',
+      mode: 'binding',
+    });
+  });
+
+  it('should run inference through the Cloudflare REST API with bearer auth', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      result: {
+        response: 'workers rest result',
+      },
+    }), { status: 200 }));
+    const runtime = new CloudflareWorkersAIRuntime({
+      accountId: 'account-123',
+      apiToken: 'cf-token',
+      gatewayId: 'gateway-a',
+      fetch: fetcher,
+    });
+
+    const session = await runtime.load(workersModel);
+    const output = await runtime.infer(workersModel, session, {
+      messages: [{ role: 'user', content: 'Hello from REST' }],
+    }, {});
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [url, init] = fetcher.mock.calls[0];
+    const body = JSON.parse(String((init as RequestInit).body));
+
+    expect(url).toBe('https://api.cloudflare.com/client/v4/accounts/account-123/ai/run/@cf/meta/llama-3.1-8b-instruct');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer cf-token',
+        'content-type': 'application/json',
+        'cf-aig-gateway-id': 'gateway-a',
+      },
+    });
+    expect(body).toEqual({
+      messages: [{ role: 'user', content: 'Hello from REST' }],
+    });
+    expect(output.text).toBe('workers rest result');
+  });
+
+  it('should support custom Workers AI request builders and response parsers', async () => {
+    const runtime = new CloudflareWorkersAIRuntime({
+      ai: {
+        run: async (_model, payload) => ({ output: { value: `custom:${payload.input}` } }),
+      },
+      buildInput: (_model, input) => ({ input: input.normalized }),
+      parseResponse: (payload) => (payload as any).output.value,
+    });
+
+    const session = await runtime.load(workersModel);
+    const output = await runtime.infer(workersModel, session, {
+      normalized: 'custom input',
+    }, {});
+
+    expect(output.text).toBe('custom:custom input');
+  });
+
+  it('should reject REST mode without Cloudflare credentials', async () => {
+    const runtime = new CloudflareWorkersAIRuntime();
+    const session = await runtime.load(workersModel);
+
+    await expect(runtime.infer(workersModel, session, { text: 'Hello' }, {}))
+      .rejects.toThrow('requires metadata.accountId or runtime accountId');
+  });
+
+  it('should fan out batch inference through Workers AI', async () => {
+    const ai = {
+      run: vi.fn(async (_model, payload) => ({ response: `cf:${payload.prompt}` })),
+    };
+    const runtime = new CloudflareWorkersAIRuntime({ ai });
+    const session = await runtime.load(workersModel);
+
+    const results = await runtime.batchInfer(workersModel, session, [
+      { normalized: 'one' },
+      { normalized: 'two' },
+    ], {});
+
+    expect(ai.run).toHaveBeenCalledTimes(2);
+    expect(results.map(result => result.text)).toEqual(['cf:one', 'cf:two']);
   });
 });
