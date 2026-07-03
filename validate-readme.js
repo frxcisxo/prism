@@ -271,8 +271,65 @@ try {
     || result.raw?.runtime !== 'resilient'
     || result.raw?.innerRuntime !== 'validation-primary-runtime'
     || result.raw?.attempts !== 2
+    || result.raw?.circuitBreaker?.state !== 'closed'
   ) {
     throw new Error('Resilient runtime smoke check returned unexpected output');
+  }
+
+  let failingPrimaryCalls = 0;
+  let now = 1_000;
+  const circuitRuntime = new ResilientInferenceRuntime({
+    primary: {
+      id: 'validation-failing-primary',
+      supports: () => true,
+      load: async () => ({ runtime: 'validation-failing-primary' }),
+      infer: async () => {
+        failingPrimaryCalls += 1;
+        throw new Error('validation primary down');
+      },
+    },
+    fallback: {
+      id: 'validation-fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'validation-fallback-runtime' }),
+      infer: async () => ({
+        text: 'resilient:fallback',
+        source: 'remote',
+      }),
+    },
+    maxRetries: 0,
+    timeoutMs: 100,
+    circuitBreaker: {
+      failureThreshold: 1,
+      recoveryMs: 1_000,
+      now: () => now,
+    },
+  });
+  const circuitEngine = new InferenceEngine({ runtimes: [circuitRuntime] });
+  await circuitEngine.loadModel({
+    id: 'validation-resilient-circuit',
+    name: 'Validation Resilient Circuit',
+    version: '1.0.0',
+    format: 'remote',
+    size: 1,
+    capabilities: ['validation'],
+  });
+
+  const opened = await circuitEngine.infer('validation-resilient-circuit', 'Open circuit.', {
+    cache: false,
+  });
+  const skipped = await circuitEngine.infer('validation-resilient-circuit', 'Skip primary.', {
+    cache: false,
+  });
+
+  if (
+    failingPrimaryCalls !== 1
+    || opened.text !== 'resilient:fallback'
+    || opened.raw?.circuitBreaker?.state !== 'open'
+    || skipped.raw?.innerRuntime !== 'validation-fallback-runtime'
+    || skipped.raw?.errors?.[0] !== 'Primary runtime circuit is open'
+  ) {
+    throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }
 
   console.log('OK resilient inference runtime');

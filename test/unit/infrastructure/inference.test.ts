@@ -648,6 +648,151 @@ describe('ResilientInferenceRuntime', () => {
     expect(outputs.map(output => output.text)).toEqual(['ok:one', 'ok:two']);
     expect(outputs.every(output => output.runtime === 'resilient')).toBe(true);
   });
+
+  it('should open the primary circuit and skip calls before recovery', async () => {
+    let now = 1_000;
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn(async () => {
+        throw new Error('primary down');
+      }),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 0,
+      timeoutMs: 50,
+      circuitBreaker: {
+        failureThreshold: 2,
+        recoveryMs: 1_000,
+        now: () => now,
+      },
+    });
+    const session = await runtime.load(model);
+
+    await runtime.infer(model, session, { normalized: 'first' }, {});
+    const opened = await runtime.infer(model, session, { normalized: 'second' }, {});
+    const skipped = await runtime.infer(model, session, { normalized: 'third' }, {});
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(fallback.infer).toHaveBeenCalledTimes(3);
+    expect(opened.circuitBreaker).toMatchObject({
+      state: 'open',
+      consecutiveFailures: 2,
+      openedAt: now,
+      nextRetryAt: now + 1_000,
+    });
+    expect(skipped.errors).toEqual(['Primary runtime circuit is open']);
+    expect(skipped.circuitBreaker.state).toBe('open');
+  });
+
+  it('should close the circuit after a successful half-open probe', async () => {
+    let now = 1_000;
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn()
+        .mockRejectedValueOnce(new Error('primary down'))
+        .mockResolvedValueOnce({
+          text: 'primary recovered',
+          source: 'remote',
+        }),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 0,
+      timeoutMs: 50,
+      circuitBreaker: {
+        failureThreshold: 1,
+        recoveryMs: 1_000,
+        now: () => now,
+      },
+    });
+    const session = await runtime.load(model);
+
+    await runtime.infer(model, session, { normalized: 'first' }, {});
+    now += 1_000;
+    const recovered = await runtime.infer(model, session, { normalized: 'probe' }, {});
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(fallback.infer).toHaveBeenCalledTimes(1);
+    expect(recovered).toMatchObject({
+      text: 'primary recovered',
+      fallbackUsed: false,
+      circuitBreaker: {
+        state: 'closed',
+        consecutiveFailures: 0,
+      },
+    });
+  });
+
+  it('should reopen the circuit when a half-open probe fails', async () => {
+    let now = 1_000;
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn(async () => {
+        throw new Error('still down');
+      }),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 0,
+      timeoutMs: 50,
+      circuitBreaker: {
+        failureThreshold: 1,
+        recoveryMs: 1_000,
+        now: () => now,
+      },
+    });
+    const session = await runtime.load(model);
+
+    await runtime.infer(model, session, { normalized: 'first' }, {});
+    now += 1_000;
+    const reopened = await runtime.infer(model, session, { normalized: 'probe' }, {});
+
+    expect(primary.infer).toHaveBeenCalledTimes(2);
+    expect(fallback.infer).toHaveBeenCalledTimes(2);
+    expect(reopened.circuitBreaker).toMatchObject({
+      state: 'open',
+      consecutiveFailures: 2,
+      openedAt: now,
+      nextRetryAt: now + 1_000,
+    });
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {

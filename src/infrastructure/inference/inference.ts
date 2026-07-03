@@ -106,6 +106,23 @@ export interface OllamaRuntimeConfig {
   parseResponse?: (response: unknown) => string;
 }
 
+export type CircuitBreakerState = 'closed' | 'open' | 'half-open';
+
+export interface ResilientCircuitBreakerConfig {
+  failureThreshold?: number;
+  recoveryMs?: number;
+  halfOpenMaxCalls?: number;
+  now?: () => number;
+}
+
+export interface ResilientCircuitBreakerStatus {
+  enabled: boolean;
+  state: CircuitBreakerState;
+  consecutiveFailures: number;
+  openedAt?: number;
+  nextRetryAt?: number;
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -113,6 +130,7 @@ export interface ResilientInferenceRuntimeConfig {
   timeoutMs?: number;
   retryDelayMs?: number;
   shouldRetry?: (error: unknown, attempt: number) => boolean;
+  circuitBreaker?: ResilientCircuitBreakerConfig | false;
 }
 
 export interface BatchedInference {
@@ -316,6 +334,15 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
   private timeoutMs: number;
   private retryDelayMs: number;
   private shouldRetry: (error: unknown, attempt: number) => boolean;
+  private circuitBreakerEnabled: boolean;
+  private failureThreshold: number;
+  private recoveryMs: number;
+  private halfOpenMaxCalls: number;
+  private now: () => number;
+  private circuitState: CircuitBreakerState = 'closed';
+  private consecutiveFailures = 0;
+  private openedAt?: number;
+  private halfOpenCalls = 0;
 
   constructor(config: ResilientInferenceRuntimeConfig) {
     this.primary = config.primary;
@@ -324,6 +351,18 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
     this.timeoutMs = config.timeoutMs ?? 10_000;
     this.retryDelayMs = config.retryDelayMs ?? 0;
     this.shouldRetry = config.shouldRetry || (() => true);
+    const circuitBreaker = config.circuitBreaker;
+    this.circuitBreakerEnabled = circuitBreaker !== false;
+    this.failureThreshold = circuitBreaker && circuitBreaker.failureThreshold
+      ? circuitBreaker.failureThreshold
+      : 3;
+    this.recoveryMs = circuitBreaker && circuitBreaker.recoveryMs !== undefined
+      ? circuitBreaker.recoveryMs
+      : 30_000;
+    this.halfOpenMaxCalls = circuitBreaker && circuitBreaker.halfOpenMaxCalls
+      ? circuitBreaker.halfOpenMaxCalls
+      : 1;
+    this.now = circuitBreaker && circuitBreaker.now ? circuitBreaker.now : () => Date.now();
   }
 
   supports(model: InferenceModel): boolean {
@@ -395,17 +434,21 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
     const resilientSession = session as ResilientRuntimeSession;
     const errors: string[] = [];
 
-    if (resilientSession.primary) {
+    if (resilientSession.primary && this.canUsePrimary()) {
       try {
         const output = await this.executeWithRetry(
           () => this.primary.infer(model, resilientSession.primary!, input, options),
           `infer:${this.primary.id}`,
           errors
         );
+        this.recordPrimarySuccess();
         return this.decorate(output, false, this.primary.id, errors);
       } catch {
+        this.recordPrimaryFailure();
         // Fall through to the fallback runtime with the retry history captured by executeWithRetry.
       }
+    } else if (resilientSession.primary && this.circuitBreakerEnabled) {
+      errors.push(`Primary runtime circuit is ${this.getCircuitBreakerStatus().state}`);
     }
 
     if (this.fallback && resilientSession.fallback) {
@@ -496,8 +539,68 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
       innerRuntime: runtime,
       fallbackUsed,
       attempts: errors.length + 1,
+      circuitBreaker: this.getCircuitBreakerStatus(),
       ...(errors.length > 0 ? { errors } : {}),
     };
+  }
+
+  getCircuitBreakerStatus(): ResilientCircuitBreakerStatus {
+    const nextRetryAt = this.openedAt !== undefined ? this.openedAt + this.recoveryMs : undefined;
+    return {
+      enabled: this.circuitBreakerEnabled,
+      state: this.circuitState,
+      consecutiveFailures: this.consecutiveFailures,
+      openedAt: this.openedAt,
+      nextRetryAt,
+    };
+  }
+
+  private canUsePrimary(): boolean {
+    if (!this.circuitBreakerEnabled) {
+      return true;
+    }
+
+    if (this.circuitState === 'open') {
+      const openedAt = this.openedAt ?? this.now();
+      if (this.now() - openedAt >= this.recoveryMs) {
+        this.circuitState = 'half-open';
+        this.halfOpenCalls = 0;
+      } else {
+        return false;
+      }
+    }
+
+    if (this.circuitState === 'half-open') {
+      if (this.halfOpenCalls >= this.halfOpenMaxCalls) {
+        return false;
+      }
+      this.halfOpenCalls += 1;
+    }
+
+    return true;
+  }
+
+  private recordPrimarySuccess(): void {
+    if (!this.circuitBreakerEnabled) {
+      return;
+    }
+    this.circuitState = 'closed';
+    this.consecutiveFailures = 0;
+    this.openedAt = undefined;
+    this.halfOpenCalls = 0;
+  }
+
+  private recordPrimaryFailure(): void {
+    if (!this.circuitBreakerEnabled) {
+      return;
+    }
+
+    this.consecutiveFailures += 1;
+    if (this.circuitState === 'half-open' || this.consecutiveFailures >= this.failureThreshold) {
+      this.circuitState = 'open';
+      this.openedAt = this.now();
+      this.halfOpenCalls = 0;
+    }
   }
 
   private errorMessage(error: unknown): string {
