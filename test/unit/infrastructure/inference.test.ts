@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import {
   ModelLoader,
+  HttpInferenceRuntime,
   InferenceEngine,
   OnnxRuntimeWebRuntime,
   type InferenceConfig,
@@ -606,5 +607,180 @@ describe('OnnxRuntimeWebRuntime', () => {
     expect(result.text).toContain('ONNX inference produced 1 output');
     expect(output?.dims).toEqual([1]);
     expect(Array.from(output?.data || [])).toEqual([42]);
+  });
+});
+
+describe('HttpInferenceRuntime', () => {
+  const remoteModel = {
+    id: 'remote-chat',
+    name: 'Remote Chat',
+    version: '1.0.0',
+    format: 'openai-compatible' as const,
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      remoteModel: 'llama-edge',
+    },
+  };
+
+  it('should support HTTP and OpenAI-compatible remote models', () => {
+    const runtime = new HttpInferenceRuntime();
+
+    expect(runtime.supports(remoteModel)).toBe(true);
+    expect(runtime.supports({
+      id: 'metadata-runtime',
+      name: 'Metadata Runtime',
+      version: '1.0.0',
+      format: 'onnx',
+      size: 1,
+      capabilities: [],
+      metadata: { runtime: 'http', endpoint: 'https://ai.example/v1/chat/completions' },
+    })).toBe(true);
+    expect(runtime.supports({
+      id: 'local.gguf',
+      name: 'Local GGUF',
+      version: '1.0.0',
+      format: 'gguf',
+      size: 1,
+      capabilities: [],
+    })).toBe(false);
+  });
+
+  it('should send OpenAI-compatible requests with auth headers and parse chat responses', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({
+      choices: [
+        { message: { content: 'hello from the remote edge' } },
+      ],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const runtime = new HttpInferenceRuntime({
+      endpoint: 'https://ai.example/v1/chat/completions',
+      apiKey: 'test-secret',
+      fetch: fetcher,
+    });
+
+    const session = await runtime.load(remoteModel);
+    const output = await runtime.infer(remoteModel, session, {
+      text: 'Hi PRISM',
+      normalized: 'Hi PRISM',
+    }, {
+      temperature: 0.2,
+      maxTokens: 32,
+    });
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [url, init] = fetcher.mock.calls[0];
+    const body = JSON.parse(String((init as RequestInit).body));
+
+    expect(url).toBe('https://ai.example/v1/chat/completions');
+    expect(init).toMatchObject({
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer test-secret',
+      },
+    });
+    expect(body).toEqual({
+      model: 'llama-edge',
+      messages: [{ role: 'user', content: 'Hi PRISM' }],
+      temperature: 0.2,
+      max_tokens: 32,
+      stream: false,
+    });
+    expect(output).toMatchObject({
+      text: 'hello from the remote edge',
+      source: 'remote',
+      runtime: 'http',
+      status: 200,
+    });
+  });
+
+  it('should support custom request builders and response parsers', async () => {
+    const fetcher = vi.fn(async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body));
+      return new Response(JSON.stringify({
+        result: { text: `custom:${body.prompt}` },
+      }), { status: 200 });
+    });
+    const runtime = new HttpInferenceRuntime({
+      endpoint: 'https://ai.example/custom',
+      fetch: fetcher,
+      buildRequest: (_model, input) => ({ prompt: input.normalized }),
+      parseResponse: (payload) => (payload as any).result.text,
+    });
+
+    const session = await runtime.load({
+      ...remoteModel,
+      format: 'remote',
+      metadata: {},
+    });
+    const output = await runtime.infer(remoteModel, session, {
+      normalized: 'custom prompt',
+    }, {});
+
+    expect(output.text).toBe('custom:custom prompt');
+  });
+
+  it('should reject non-OK responses with status and provider error message', async () => {
+    const runtime = new HttpInferenceRuntime({
+      endpoint: 'https://ai.example/v1/chat/completions',
+      fetch: async () => new Response(JSON.stringify({
+        error: { message: 'model unavailable' },
+      }), { status: 503 }),
+    });
+    const session = await runtime.load(remoteModel);
+
+    await expect(runtime.infer(remoteModel, session, { text: 'Hello' }, {}))
+      .rejects.toThrow('HTTP inference failed for remote-chat: 503 model unavailable');
+  });
+
+  it('should fan out batch inference through the HTTP runtime', async () => {
+    const fetcher = vi.fn(async (_url, init) => {
+      const body = JSON.parse(String((init as RequestInit).body));
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: `remote:${body.messages[0].content}` } }],
+      }), { status: 200 });
+    });
+    const runtime = new HttpInferenceRuntime({
+      endpoint: 'https://ai.example/v1/chat/completions',
+      fetch: fetcher,
+    });
+    const session = await runtime.load(remoteModel);
+
+    const results = await runtime.batchInfer(remoteModel, session, [
+      { normalized: 'one' },
+      { normalized: 'two' },
+    ], {});
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(results.map(result => result.text)).toEqual(['remote:one', 'remote:two']);
+  });
+
+  it('should work through InferenceEngine and expose raw provider payloads', async () => {
+    const engine = new InferenceEngine({
+      runtimes: [
+        new HttpInferenceRuntime({
+          endpoint: 'https://ai.example/v1/chat/completions',
+          fetch: async () => new Response(JSON.stringify({
+            choices: [{ text: 'engine remote result' }],
+          }), { status: 200 }),
+        }),
+      ],
+    });
+
+    await engine.loadModel(remoteModel);
+    const result = await engine.infer('remote-chat', 'Run through engine', { cache: false });
+
+    expect(result).toMatchObject({
+      text: 'engine remote result',
+      source: 'remote',
+      modelId: 'remote-chat',
+      raw: {
+        runtime: 'http',
+        status: 200,
+      },
+    });
   });
 });

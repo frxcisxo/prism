@@ -70,7 +70,7 @@ export interface InferenceModel {
   id: string;
   name: string;
   size: number;
-  format: 'onnx' | 'tflite' | 'gguf' | 'safetensors';
+  format: 'onnx' | 'tflite' | 'gguf' | 'safetensors' | 'remote' | 'http' | 'openai-compatible';
   capabilities: string[];
   quantization?: 'int8' | 'int4' | 'float16';
   metadata?: Record<string, any>;

@@ -7,7 +7,7 @@
  */
 
 import { AdaptiveBatcher, ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
-import { InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
+import { HttpInferenceRuntime, InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
@@ -112,6 +112,56 @@ try {
   console.log('OK optional ONNX runtime real fixture');
 } catch (error) {
   fail('optional ONNX runtime', error);
+}
+
+try {
+  let calls = 0;
+  const runtime = new HttpInferenceRuntime({
+    endpoint: 'https://example.test/v1/chat/completions',
+    apiKey: 'validation-key',
+    fetch: async (_url, init) => {
+      calls += 1;
+      const body = JSON.parse(String(init.body));
+      const headers = init.headers || {};
+
+      if (headers.authorization !== 'Bearer validation-key') {
+        throw new Error('HTTP runtime did not attach bearer auth');
+      }
+      if (body.model !== 'validation-remote-model' || body.stream !== false) {
+        throw new Error('HTTP runtime sent an unexpected OpenAI-compatible request');
+      }
+
+      return new Response(JSON.stringify({
+        choices: [
+          { message: { content: `remote:${body.messages[0].content}` } },
+        ],
+      }), { status: 200 });
+    },
+  });
+  const engine = new InferenceEngine({ runtimes: [runtime] });
+  await engine.loadModel({
+    id: 'validation-remote',
+    name: 'Validation Remote Gateway',
+    version: '1.0.0',
+    format: 'openai-compatible',
+    size: 1,
+    capabilities: ['chat'],
+    metadata: {
+      remoteModel: 'validation-remote-model',
+    },
+  });
+  const result = await engine.infer('validation-remote', 'Validate HTTP runtime.', {
+    cache: false,
+    maxTokens: 16,
+  });
+
+  if (calls !== 1 || result.text !== 'remote:Validate HTTP runtime.' || result.source !== 'remote') {
+    throw new Error('HTTP runtime smoke check returned unexpected output');
+  }
+
+  console.log('OK HTTP/OpenAI-compatible inference runtime');
+} catch (error) {
+  fail('HTTP/OpenAI-compatible inference runtime', error);
 }
 
 try {

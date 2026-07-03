@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-155%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-161%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -17,7 +17,7 @@ Implemented today:
 - `PrismCRDT` orchestration with deploy, merge, route, cache, stats, and serialization flows.
 - Multi-model ensemble strategies: voting, averaging, weighted, stacking, boosting, and fallback behavior.
 - Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and provider-native cache backends.
-- SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, and optional real ONNX Runtime Web execution.
+- SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, optional real ONNX Runtime Web execution, and HTTP/OpenAI-compatible remote gateways.
 - Pluggable streaming inference with provider token sources, deltas, final chunks, sequence numbers, and abort support.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
@@ -28,7 +28,7 @@ Experimental / roadmap:
 
 - TensorFlow Lite, GGUF, and safetensors loaders currently expose the adapter shape; ONNX has an optional real runtime through `onnxruntime-web`.
 - Edge adapters now validate, cache, and invoke injected inference handlers; Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs cache adapters are implemented as dependency-free bindings.
-- Provider-specific LLM streaming adapters are still integration work in progress.
+- Provider-specific LLM streaming adapters are still integration work in progress; OpenAI-compatible non-streaming gateway calls are implemented through `HttpInferenceRuntime`.
 
 ## 🏗️ Clean Architecture
 
@@ -288,6 +288,42 @@ const result = await engine.infer('classifier', {
 ```
 
 For local `modelPath`/`modelBuffer` sources, PRISM can verify `metadata.sha256` and `metadata.expectedSize` before creating the ONNX session. This is recommended for edge deployments where model artifacts may be cached, mirrored, or updated independently from application code.
+
+### HTTP / OpenAI-Compatible Runtime
+
+Use `HttpInferenceRuntime` when PRISM should orchestrate a remote model endpoint instead of loading a local artifact. This works with OpenAI-compatible gateways, self-hosted vLLM/TGI routers, Ollama-compatible bridges, Workers AI gateways, or internal model APIs that can expose a chat-completions style response.
+
+```typescript
+import { HttpInferenceRuntime, InferenceEngine } from '@frxncisxo/prism/inference';
+
+const engine = new InferenceEngine({
+  runtimes: [
+    new HttpInferenceRuntime({
+      endpoint: process.env.PRISM_AI_URL!,
+      apiKey: process.env.PRISM_AI_KEY,
+    }),
+  ],
+});
+
+await engine.loadModel({
+  id: 'edge-chat',
+  name: 'Edge Chat Gateway',
+  version: '1.0.0',
+  format: 'openai-compatible',
+  size: 1,
+  capabilities: ['chat'],
+  metadata: {
+    remoteModel: 'llama-3.1-8b',
+  },
+});
+
+const result = await engine.infer('edge-chat', 'Explain edge AI in one sentence.', {
+  temperature: 0.2,
+  maxTokens: 64,
+});
+```
+
+Custom APIs can inject `buildRequest` and `parseResponse`, so PRISM keeps orchestration, cache, batching, stats, and model lifecycle logic independent from a provider SDK.
 
 ### Batch Inference (Higher Throughput)
 
@@ -835,8 +871,9 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 155 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 161 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
+- [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
 - [x] **Provider-native edge cache bindings** - Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs adapters
 - [x] **Pluggable streaming inference** - Provider token source contract, deltas, ordered chunks, final markers, and abort support
@@ -845,7 +882,7 @@ await prism.deployModel({
 
 ### 🚧 **In Development**
 
-- [ ] **Provider-specific runtime adapters** - Transformers.js, Workers AI, TensorFlow Lite, and GGUF execution adapters
+- [ ] **Provider-specific runtime adapters** - Transformers.js, Workers AI bindings, TensorFlow Lite, and GGUF execution adapters
 
 ### 📋 **Future Features**
 
@@ -870,7 +907,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **155 tests passing**:
+Tests are organized by Clean Architecture layers with **161 tests passing**:
 
 ```
 test/

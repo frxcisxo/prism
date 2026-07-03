@@ -55,6 +55,19 @@ export interface OnnxRuntimeWebConfig {
   sha256?: (data: Uint8Array) => Promise<string>;
 }
 
+export interface HttpInferenceRuntimeConfig {
+  endpoint?: string;
+  apiKey?: string;
+  headers?: Record<string, string>;
+  fetch?: typeof fetch;
+  buildRequest?: (
+    model: InferenceModel,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ) => Record<string, any>;
+  parseResponse?: (response: unknown) => string;
+}
+
 export interface BatchedInference {
   requests: InferenceInput[];
   batchSize: number;
@@ -531,6 +544,165 @@ export class OnnxRuntimeWebRuntime implements InferenceRuntime {
     const first = outputs[names[0]];
     const dims = Array.isArray(first?.dims) ? first.dims.join('x') : 'unknown';
     return `ONNX inference produced ${names.length} output(s); first=${names[0]} shape=${dims}`;
+  }
+}
+
+export class HttpInferenceRuntime implements InferenceRuntime {
+  id = 'http';
+
+  constructor(private readonly config: HttpInferenceRuntimeConfig = {}) {}
+
+  supports(model: InferenceModel): boolean {
+    return model.format === 'http'
+      || model.format === 'remote'
+      || model.format === 'openai-compatible'
+      || model.metadata?.runtime === this.id
+      || model.metadata?.runtime === 'openai-compatible'
+      || typeof model.metadata?.endpoint === 'string'
+      || typeof model.metadata?.apiUrl === 'string';
+  }
+
+  async load(model: InferenceModel): Promise<Record<string, any>> {
+    const endpoint = this.resolveEndpoint(model);
+
+    return {
+      runtime: this.id,
+      endpoint,
+      headers: this.resolveHeaders(model),
+      remoteModel: model.metadata?.remoteModel || model.metadata?.model || model.id,
+    };
+  }
+
+  async infer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Promise<Record<string, any>> {
+    const fetcher = this.config.fetch || globalThis.fetch;
+    if (!fetcher) {
+      throw new Error('fetch is required for HttpInferenceRuntime');
+    }
+
+    const endpoint = String(session.endpoint || this.resolveEndpoint(model));
+    const body = this.config.buildRequest
+      ? this.config.buildRequest(model, input, options)
+      : this.buildOpenAICompatibleRequest(model, session, input, options);
+    const response = await fetcher(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(session.headers as Record<string, string> || {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    const payload = text ? this.parseJson(text, endpoint) : {};
+
+    if (!response.ok) {
+      throw new Error(`HTTP inference failed for ${model.id}: ${response.status} ${this.errorPreview(payload, text)}`);
+    }
+
+    const outputText = this.config.parseResponse
+      ? this.config.parseResponse(payload)
+      : this.parseOpenAICompatibleResponse(payload);
+
+    return {
+      text: outputText,
+      response: payload,
+      request: body,
+      status: response.status,
+      source: 'remote',
+      runtime: this.id,
+    };
+  }
+
+  async batchInfer(
+    model: InferenceModel,
+    session: Record<string, any>,
+    inputs: Record<string, any>[],
+    options: InferenceOptions
+  ): Promise<Record<string, any>[]> {
+    return Promise.all(inputs.map(input => this.infer(model, session, input, options)));
+  }
+
+  private resolveEndpoint(model: InferenceModel): string {
+    const endpoint = model.metadata?.endpoint || model.metadata?.apiUrl || this.config.endpoint;
+    if (typeof endpoint !== 'string' || endpoint.length === 0) {
+      throw new Error(`HTTP model ${model.id} requires metadata.endpoint or runtime endpoint`);
+    }
+    return endpoint;
+  }
+
+  private resolveHeaders(model: InferenceModel): Record<string, string> {
+    const headers: Record<string, string> = {
+      ...(this.config.headers || {}),
+      ...(model.metadata?.headers || {}),
+    };
+    const apiKey = model.metadata?.apiKey || this.config.apiKey;
+
+    if (apiKey && !headers.authorization && !headers.Authorization) {
+      headers.authorization = `Bearer ${apiKey}`;
+    }
+
+    return headers;
+  }
+
+  private buildOpenAICompatibleRequest(
+    model: InferenceModel,
+    session: Record<string, any>,
+    input: Record<string, any>,
+    options: InferenceOptions
+  ): Record<string, any> {
+    const messages = Array.isArray(input.messages)
+      ? input.messages
+      : [
+          {
+            role: 'user',
+            content: input.text || input.prompt || input.normalized || JSON.stringify(input),
+          },
+        ];
+
+    return {
+      model: session.remoteModel || model.metadata?.remoteModel || model.id,
+      messages,
+      temperature: options.temperature ?? model.metadata?.temperature ?? 0.7,
+      max_tokens: options.maxTokens ?? model.metadata?.maxTokens ?? 256,
+      stream: false,
+      ...(model.metadata?.request || {}),
+    };
+  }
+
+  private parseJson(text: string, endpoint: string): unknown {
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`HTTP inference endpoint ${endpoint} returned invalid JSON`);
+    }
+  }
+
+  private parseOpenAICompatibleResponse(payload: unknown): string {
+    const data = payload as Record<string, any>;
+    const firstChoice = Array.isArray(data.choices) ? data.choices[0] : undefined;
+    const content = firstChoice?.message?.content
+      || firstChoice?.delta?.content
+      || firstChoice?.text
+      || data.output_text
+      || data.generated_text
+      || data.text
+      || data.result;
+
+    if (typeof content !== 'string') {
+      throw new Error('HTTP inference response did not include text output');
+    }
+
+    return content;
+  }
+
+  private errorPreview(payload: unknown, fallback: string): string {
+    const data = payload as Record<string, any>;
+    const message = data?.error?.message || data?.message || fallback;
+    return String(message).slice(0, 240);
   }
 }
 
