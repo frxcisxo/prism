@@ -11,6 +11,8 @@ import {
   ModelShardManager,
   PrismCRDT,
   StreamingInference,
+  decryptModelArtifact,
+  encryptModelArtifact,
   signModelManifest,
   verifySignedModelManifest,
 } from './dist/index.js';
@@ -396,6 +398,30 @@ try {
   console.log('OK signed model manifests');
 } catch (error) {
   fail('signed model manifests', error);
+}
+
+try {
+  const encrypted = await encryptModelArtifact(new Uint8Array([80, 82, 73, 83, 77]), 'validation-artifact-secret', {
+    iterations: 1_000,
+    additionalData: {
+      modelId: 'validation-sharded-model',
+      sha256: '1'.repeat(64),
+    },
+  });
+  const decrypted = await decryptModelArtifact(encrypted, 'validation-artifact-secret', {
+    additionalData: {
+      modelId: 'validation-sharded-model',
+      sha256: '1'.repeat(64),
+    },
+  });
+
+  if (new TextDecoder().decode(decrypted) !== 'PRISM' || encrypted.algorithm !== 'AES-256-GCM') {
+    throw new Error('Model artifact encryption smoke check returned unexpected output');
+  }
+
+  console.log('OK encrypted model artifacts');
+} catch (error) {
+  fail('encrypted model artifacts', error);
 }
 
 try {

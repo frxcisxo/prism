@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertSignedModelManifest,
+  canonicalizeEncryptionData,
   canonicalizeManifest,
+  decryptModelArtifact,
+  encryptModelArtifact,
   signModelManifest,
   verifySignedModelManifest,
 } from '../../../src/infrastructure/security';
@@ -72,5 +75,80 @@ describe('model manifest signing', () => {
 
     await expect(verifySignedModelManifest(signed, 'test-secret', 'edge-key-2'))
       .resolves.toMatchObject({ valid: false, reason: 'key-id-mismatch' });
+  });
+});
+
+describe('model artifact encryption', () => {
+  const salt = new Uint8Array(16).fill(7);
+  const iv = new Uint8Array(12).fill(9);
+  const additionalData = {
+    modelId: 'edge-planner-small',
+    sha256: 'a'.repeat(64),
+  };
+
+  it('should canonicalize additional authenticated data deterministically', () => {
+    expect(canonicalizeEncryptionData({ z: 1, a: { c: 3, b: 2 } }))
+      .toBe('{"a":{"b":2,"c":3},"z":1}');
+  });
+
+  it('should encrypt and decrypt binary model artifacts', async () => {
+    const artifact = new Uint8Array([80, 82, 73, 83, 77]);
+    const encrypted = await encryptModelArtifact(artifact, 'artifact-secret', {
+      salt,
+      iv,
+      iterations: 1_000,
+      additionalData,
+    });
+    const decrypted = await decryptModelArtifact(encrypted, 'artifact-secret', {
+      additionalData,
+    });
+
+    expect(encrypted).toMatchObject({
+      algorithm: 'AES-256-GCM',
+      kdf: 'PBKDF2-SHA256',
+      iterations: 1_000,
+      aad: '{"modelId":"edge-planner-small","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}',
+    });
+    expect(encrypted.ciphertext).not.toContain('PRISM');
+    expect(Array.from(decrypted)).toEqual([80, 82, 73, 83, 77]);
+  });
+
+  it('should produce stable envelopes when salt and iv are supplied', async () => {
+    const first = await encryptModelArtifact('model-bytes', 'artifact-secret', {
+      salt,
+      iv,
+      iterations: 1_000,
+    });
+    const second = await encryptModelArtifact('model-bytes', 'artifact-secret', {
+      salt,
+      iv,
+      iterations: 1_000,
+    });
+
+    expect(first).toEqual(second);
+  });
+
+  it('should reject decryption with the wrong secret', async () => {
+    const encrypted = await encryptModelArtifact('model-bytes', 'artifact-secret', {
+      salt,
+      iv,
+      iterations: 1_000,
+    });
+
+    await expect(decryptModelArtifact(encrypted, 'wrong-secret'))
+      .rejects.toThrow();
+  });
+
+  it('should reject decryption when additional data does not match', async () => {
+    const encrypted = await encryptModelArtifact('model-bytes', 'artifact-secret', {
+      salt,
+      iv,
+      iterations: 1_000,
+      additionalData,
+    });
+
+    await expect(decryptModelArtifact(encrypted, 'artifact-secret', {
+      additionalData: { modelId: 'other-model', sha256: 'a'.repeat(64) },
+    })).rejects.toThrow('additional data mismatch');
   });
 });

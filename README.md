@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-180%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -23,6 +23,7 @@ Implemented today:
 - Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
 - Runtime diagnostics with loaded model health, runtime grouping, cache counters, and redacted session metadata.
 - Signed model manifests with canonical JSON and HMAC-SHA256 verification for edge artifact provenance.
+- Authenticated model artifact encryption with AES-256-GCM envelopes and PBKDF2-SHA256 key derivation.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
 
@@ -466,6 +467,31 @@ const verification = await verifySignedModelManifest(
 if (!verification.valid) {
   throw new Error(`Invalid model manifest: ${verification.reason}`);
 }
+```
+
+### Encrypted Model Artifacts
+
+Use artifact encryption when model bytes must rest in edge caches, object storage, or CDN mirrors before being loaded. PRISM uses AES-256-GCM, stores salt/IV in the envelope, and supports additional authenticated data so ciphertext can be bound to a model manifest.
+
+```typescript
+import {
+  decryptModelArtifact,
+  encryptModelArtifact,
+} from '@frxncisxo/prism';
+
+const encrypted = await encryptModelArtifact(modelBytes, process.env.PRISM_ARTIFACT_SECRET!, {
+  additionalData: {
+    modelId: 'llama-70b',
+    sha256: '...',
+  },
+});
+
+const decryptedBytes = await decryptModelArtifact(encrypted, process.env.PRISM_ARTIFACT_SECRET!, {
+  additionalData: {
+    modelId: 'llama-70b',
+    sha256: '...',
+  },
+});
 ```
 
 ### Batch Inference (Higher Throughput)
@@ -988,7 +1014,7 @@ import {
 
 PRISM implements:
 
-- **Encryption at rest** - All model weights encrypted with libsodium
+- **Encryption at rest** - AES-256-GCM artifact envelopes with authenticated metadata
 - **Secure sync** - TLS 1.3 for network communication
 - **Model signing** - Canonical manifest signing with HMAC-SHA256 verification
 - **Secrets management** - No credentials logged or exposed
@@ -1014,7 +1040,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 180 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 185 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -1026,6 +1052,7 @@ await prism.deployModel({
 - [x] **Adaptive batching policy** - Latency window, queue pressure, error penalties, min/max bounds, and metrics
 - [x] **Runtime diagnostics** - Loaded model health, runtime grouping, cache counters, and redacted session metadata
 - [x] **Signed model manifests** - Canonical JSON signing and verification for artifact provenance
+- [x] **Encrypted model artifacts** - AES-256-GCM encryption/decryption with PBKDF2-SHA256 and authenticated metadata
 
 ### 🚧 **In Development**
 
@@ -1054,7 +1081,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **180 tests passing**:
+Tests are organized by Clean Architecture layers with **185 tests passing**:
 
 ```
 test/
