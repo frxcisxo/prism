@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-175%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-180%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -22,6 +22,7 @@ Implemented today:
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
 - Runtime diagnostics with loaded model health, runtime grouping, cache counters, and redacted session metadata.
+- Signed model manifests with canonical JSON and HMAC-SHA256 verification for edge artifact provenance.
 - WebGPU tensor primitives for matmul, GELU, and layer normalization.
 - Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
 
@@ -437,6 +438,35 @@ console.log(diagnostics.runtimes[0].runtime); // "ollama"
 ```
 
 `getLoadedModelDiagnostics()` redacts sensitive fields such as authorization headers, API keys, tokens, and credentials before returning session metadata.
+
+### Signed Model Manifests
+
+Use manifest signing to protect model metadata before it moves across caches, CDNs, or edge nodes. PRISM canonicalizes JSON before signing, so equivalent key ordering produces the same signature.
+
+```typescript
+import {
+  signModelManifest,
+  verifySignedModelManifest,
+} from '@frxncisxo/prism';
+
+const signed = await signModelManifest({
+  modelId: 'llama-70b',
+  sha256: '...',
+  shardCount: 12,
+}, process.env.PRISM_MANIFEST_SECRET!, {
+  keyId: 'edge-prod-2026',
+});
+
+const verification = await verifySignedModelManifest(
+  signed,
+  process.env.PRISM_MANIFEST_SECRET!,
+  'edge-prod-2026'
+);
+
+if (!verification.valid) {
+  throw new Error(`Invalid model manifest: ${verification.reason}`);
+}
+```
 
 ### Batch Inference (Higher Throughput)
 
@@ -960,7 +990,7 @@ PRISM implements:
 
 - **Encryption at rest** - All model weights encrypted with libsodium
 - **Secure sync** - TLS 1.3 for network communication
-- **Model signing** - Cryptographic verification of model integrity
+- **Model signing** - Canonical manifest signing with HMAC-SHA256 verification
 - **Secrets management** - No credentials logged or exposed
 - **Sandboxed execution** - WebAssembly isolates untrusted models
 
@@ -984,7 +1014,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 175 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 180 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -995,6 +1025,7 @@ await prism.deployModel({
 - [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
 - [x] **Adaptive batching policy** - Latency window, queue pressure, error penalties, min/max bounds, and metrics
 - [x] **Runtime diagnostics** - Loaded model health, runtime grouping, cache counters, and redacted session metadata
+- [x] **Signed model manifests** - Canonical JSON signing and verification for artifact provenance
 
 ### 🚧 **In Development**
 
@@ -1023,7 +1054,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **175 tests passing**:
+Tests are organized by Clean Architecture layers with **180 tests passing**:
 
 ```
 test/

@@ -7,3 +7,4 @@
 
 export * from './edge';
 export * from './inference';
+export * from './security';

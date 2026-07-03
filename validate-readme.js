@@ -6,7 +6,14 @@
  * This script validates the public package surface after `npm run build`.
  */
 
-import { AdaptiveBatcher, ModelShardManager, PrismCRDT, StreamingInference } from './dist/index.js';
+import {
+  AdaptiveBatcher,
+  ModelShardManager,
+  PrismCRDT,
+  StreamingInference,
+  signModelManifest,
+  verifySignedModelManifest,
+} from './dist/index.js';
 import { CloudflareWorkersAIRuntime, HttpInferenceRuntime, InferenceEngine, OllamaRuntime, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
@@ -365,6 +372,30 @@ try {
   console.log('OK verified model sharding');
 } catch (error) {
   fail('model sharding', error);
+}
+
+try {
+  const signed = await signModelManifest({
+    modelId: 'validation-sharded-model',
+    sha256: '1'.repeat(64),
+    shardCount: 2,
+  }, 'validation-signing-secret', {
+    keyId: 'validation-key',
+    signedAt: '2026-07-03T00:00:00.000Z',
+  });
+  const verified = await verifySignedModelManifest(signed, 'validation-signing-secret', 'validation-key');
+  const tampered = await verifySignedModelManifest({
+    ...signed,
+    sha256: '0'.repeat(64),
+  }, 'validation-signing-secret', 'validation-key');
+
+  if (!verified.valid || tampered.valid || tampered.reason !== 'signature-mismatch') {
+    throw new Error('Model manifest signing smoke check returned unexpected verification result');
+  }
+
+  console.log('OK signed model manifests');
+} catch (error) {
+  fail('signed model manifests', error);
 }
 
 try {
