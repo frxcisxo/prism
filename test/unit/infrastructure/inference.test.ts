@@ -793,6 +793,70 @@ describe('ResilientInferenceRuntime', () => {
       nextRetryAt: now + 1_000,
     });
   });
+
+  it('should emit operational events for retries, circuit changes, and fallback usage', async () => {
+    let now = 1_000;
+    const events: string[] = [];
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn()
+        .mockRejectedValueOnce(new Error('transient'))
+        .mockResolvedValueOnce({
+          text: 'primary ok',
+          source: 'remote',
+        })
+        .mockRejectedValue(new Error('primary down')),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 1,
+      timeoutMs: 50,
+      circuitBreaker: {
+        failureThreshold: 1,
+        recoveryMs: 1_000,
+        now: () => now,
+      },
+      onEvent: (event) => {
+        events.push(`${event.timestamp}:${event.type}:${event.modelId}:${event.runtime}:${event.circuitBreaker.state}`);
+      },
+    });
+    const session = await runtime.load(model);
+
+    await runtime.infer(model, session, { normalized: 'retry-success' }, {});
+    await runtime.infer(model, session, { normalized: 'open-circuit' }, {});
+    now += 500;
+    await runtime.infer(model, session, { normalized: 'skip-primary' }, {});
+    now += 500;
+    await runtime.infer(model, session, { normalized: 'half-open-fails' }, {});
+
+    expect(events).toEqual([
+      '1000:retry:resilient-model:primary-runtime:closed',
+      '1000:primary-success:resilient-model:primary-runtime:closed',
+      '1000:retry:resilient-model:primary-runtime:closed',
+      '1000:primary-failure:resilient-model:primary-runtime:closed',
+      '1000:circuit-opened:resilient-model:primary-runtime:open',
+      '1000:fallback-success:resilient-model:fallback-runtime:open',
+      '1500:primary-skipped:resilient-model:primary-runtime:open',
+      '1500:fallback-success:resilient-model:fallback-runtime:open',
+      '2000:circuit-half-open:resilient-model:primary-runtime:half-open',
+      '2000:retry:resilient-model:primary-runtime:half-open',
+      '2000:primary-failure:resilient-model:primary-runtime:half-open',
+      '2000:circuit-opened:resilient-model:primary-runtime:open',
+      '2000:fallback-success:resilient-model:fallback-runtime:open',
+    ]);
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {

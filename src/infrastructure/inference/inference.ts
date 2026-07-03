@@ -123,6 +123,28 @@ export interface ResilientCircuitBreakerStatus {
   nextRetryAt?: number;
 }
 
+export type ResilientRuntimeEventType =
+  | 'primary-success'
+  | 'primary-failure'
+  | 'fallback-success'
+  | 'fallback-failure'
+  | 'retry'
+  | 'circuit-opened'
+  | 'circuit-half-open'
+  | 'circuit-closed'
+  | 'primary-skipped';
+
+export interface ResilientRuntimeEvent {
+  type: ResilientRuntimeEventType;
+  modelId: string;
+  runtime: string;
+  timestamp: number;
+  attempt?: number;
+  error?: string;
+  fallbackUsed?: boolean;
+  circuitBreaker: ResilientCircuitBreakerStatus;
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -131,6 +153,7 @@ export interface ResilientInferenceRuntimeConfig {
   retryDelayMs?: number;
   shouldRetry?: (error: unknown, attempt: number) => boolean;
   circuitBreaker?: ResilientCircuitBreakerConfig | false;
+  onEvent?: (event: ResilientRuntimeEvent) => void;
 }
 
 export interface BatchedInference {
@@ -343,6 +366,7 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
   private consecutiveFailures = 0;
   private openedAt?: number;
   private halfOpenCalls = 0;
+  private onEvent?: (event: ResilientRuntimeEvent) => void;
 
   constructor(config: ResilientInferenceRuntimeConfig) {
     this.primary = config.primary;
@@ -363,6 +387,7 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
       ? circuitBreaker.halfOpenMaxCalls
       : 1;
     this.now = circuitBreaker && circuitBreaker.now ? circuitBreaker.now : () => Date.now();
+    this.onEvent = config.onEvent;
   }
 
   supports(model: InferenceModel): boolean {
@@ -434,21 +459,29 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
     const resilientSession = session as ResilientRuntimeSession;
     const errors: string[] = [];
 
-    if (resilientSession.primary && this.canUsePrimary()) {
+    if (resilientSession.primary && this.canUsePrimary(model.id)) {
       try {
         const output = await this.executeWithRetry(
           () => this.primary.infer(model, resilientSession.primary!, input, options),
           `infer:${this.primary.id}`,
+          model.id,
+          this.primary.id,
           errors
         );
-        this.recordPrimarySuccess();
+        this.recordPrimarySuccess(model.id);
+        this.emitEvent('primary-success', model.id, this.primary.id, {
+          fallbackUsed: false,
+        });
         return this.decorate(output, false, this.primary.id, errors);
-      } catch {
-        this.recordPrimaryFailure();
+      } catch (error) {
+        this.recordPrimaryFailure(model.id, this.errorMessage(error));
         // Fall through to the fallback runtime with the retry history captured by executeWithRetry.
       }
     } else if (resilientSession.primary && this.circuitBreakerEnabled) {
       errors.push(`Primary runtime circuit is ${this.getCircuitBreakerStatus().state}`);
+      this.emitEvent('primary-skipped', model.id, this.primary.id, {
+        error: errors[errors.length - 1],
+      });
     }
 
     if (this.fallback && resilientSession.fallback) {
@@ -457,9 +490,16 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
           this.fallback.infer(model, resilientSession.fallback, input, options),
           `infer:${this.fallback.id}`
         );
+        this.emitEvent('fallback-success', model.id, this.fallback.id, {
+          fallbackUsed: true,
+        });
         return this.decorate(output, true, this.fallback.id, errors);
       } catch (error) {
         errors.push(this.errorMessage(error));
+        this.emitEvent('fallback-failure', model.id, this.fallback.id, {
+          error: this.errorMessage(error),
+          fallbackUsed: true,
+        });
       }
     }
 
@@ -478,6 +518,8 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
   private async executeWithRetry<T>(
     operation: () => Promise<T>,
     label: string,
+    modelId?: string,
+    runtime?: string,
     errors: string[] = []
   ): Promise<T> {
     let lastError: unknown;
@@ -490,6 +532,12 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
         errors.push(this.errorMessage(error));
         if (attempt >= this.maxRetries || !this.shouldRetry(error, attempt + 1)) {
           break;
+        }
+        if (modelId && runtime) {
+          this.emitEvent('retry', modelId, runtime, {
+            attempt: attempt + 2,
+            error: this.errorMessage(error),
+          });
         }
         await this.delay(this.retryDelayMs);
       }
@@ -555,7 +603,7 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
     };
   }
 
-  private canUsePrimary(): boolean {
+  private canUsePrimary(modelId: string): boolean {
     if (!this.circuitBreakerEnabled) {
       return true;
     }
@@ -565,6 +613,7 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
       if (this.now() - openedAt >= this.recoveryMs) {
         this.circuitState = 'half-open';
         this.halfOpenCalls = 0;
+        this.emitEvent('circuit-half-open', modelId, this.primary.id);
       } else {
         return false;
       }
@@ -580,17 +629,26 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
     return true;
   }
 
-  private recordPrimarySuccess(): void {
+  private recordPrimarySuccess(modelId: string): void {
     if (!this.circuitBreakerEnabled) {
       return;
     }
+    const previousState = this.circuitState;
     this.circuitState = 'closed';
     this.consecutiveFailures = 0;
     this.openedAt = undefined;
     this.halfOpenCalls = 0;
+    if (previousState !== 'closed') {
+      this.emitEvent('circuit-closed', modelId, this.primary.id);
+    }
   }
 
-  private recordPrimaryFailure(): void {
+  private recordPrimaryFailure(modelId: string, error: string): void {
+    this.emitEvent('primary-failure', modelId, this.primary.id, {
+      error,
+      fallbackUsed: Boolean(this.fallback),
+    });
+
     if (!this.circuitBreakerEnabled) {
       return;
     }
@@ -600,7 +658,26 @@ export class ResilientInferenceRuntime implements InferenceRuntime {
       this.circuitState = 'open';
       this.openedAt = this.now();
       this.halfOpenCalls = 0;
+      this.emitEvent('circuit-opened', modelId, this.primary.id, {
+        error,
+      });
     }
+  }
+
+  private emitEvent(
+    type: ResilientRuntimeEventType,
+    modelId: string,
+    runtime: string,
+    details: Partial<Omit<ResilientRuntimeEvent, 'type' | 'modelId' | 'runtime' | 'timestamp' | 'circuitBreaker'>> = {}
+  ): void {
+    this.onEvent?.({
+      type,
+      modelId,
+      runtime,
+      timestamp: this.now(),
+      circuitBreaker: this.getCircuitBreakerStatus(),
+      ...details,
+    });
   }
 
   private errorMessage(error: unknown): string {

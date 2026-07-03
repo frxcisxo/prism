@@ -278,6 +278,7 @@ try {
 
   let failingPrimaryCalls = 0;
   let now = 1_000;
+  const resilientEvents = [];
   const circuitRuntime = new ResilientInferenceRuntime({
     primary: {
       id: 'validation-failing-primary',
@@ -304,6 +305,9 @@ try {
       recoveryMs: 1_000,
       now: () => now,
     },
+    onEvent: (event) => {
+      resilientEvents.push(`${event.type}:${event.modelId}:${event.runtime}:${event.circuitBreaker.state}`);
+    },
   });
   const circuitEngine = new InferenceEngine({ runtimes: [circuitRuntime] });
   await circuitEngine.loadModel({
@@ -328,6 +332,13 @@ try {
     || opened.raw?.circuitBreaker?.state !== 'open'
     || skipped.raw?.innerRuntime !== 'validation-fallback-runtime'
     || skipped.raw?.errors?.[0] !== 'Primary runtime circuit is open'
+    || resilientEvents.join('|') !== [
+      'primary-failure:validation-resilient-circuit:validation-failing-primary:closed',
+      'circuit-opened:validation-resilient-circuit:validation-failing-primary:open',
+      'fallback-success:validation-resilient-circuit:validation-fallback-runtime:open',
+      'primary-skipped:validation-resilient-circuit:validation-failing-primary:open',
+      'fallback-success:validation-resilient-circuit:validation-fallback-runtime:open',
+    ].join('|')
   ) {
     throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }

@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-197%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-198%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -17,7 +17,7 @@ Implemented today:
 - `PrismCRDT` orchestration with deploy, merge, route, cache, stats, and serialization flows.
 - Multi-model ensemble strategies: voting, averaging, weighted, stacking, boosting, and fallback behavior.
 - Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and provider-native cache backends.
-- SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, optional real ONNX Runtime Web execution, HTTP/OpenAI-compatible remote gateways, Cloudflare Workers AI, Ollama local/cloud runtime support, and a resilient retry/timeout/fallback/circuit-breaker wrapper.
+- SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, optional real ONNX Runtime Web execution, HTTP/OpenAI-compatible remote gateways, Cloudflare Workers AI, Ollama local/cloud runtime support, and a resilient retry/timeout/fallback/circuit-breaker wrapper with typed operational events.
 - Pluggable streaming inference with provider token sources, deltas, final chunks, sequence numbers, and abort support.
 - Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
 - Adaptive batching policy with configurable latency targets, queue pressure, error penalties, and runtime metrics.
@@ -281,12 +281,15 @@ const engine = new InferenceEngine({
         recoveryMs: 30_000,
         halfOpenMaxCalls: 1,
       },
+      onEvent: (event) => {
+        console.log(event.type, event.modelId, event.runtime, event.circuitBreaker.state);
+      },
     }),
   ],
 });
 ```
 
-When the primary runtime crosses the failure threshold, PRISM opens the circuit, routes to the fallback without touching the failing provider, and later probes recovery in `half-open` state. Inference outputs include `raw.circuitBreaker` so dashboards can show whether traffic is healthy, degraded, or recovering.
+When the primary runtime crosses the failure threshold, PRISM opens the circuit, routes to the fallback without touching the failing provider, and later probes recovery in `half-open` state. Inference outputs include `raw.circuitBreaker`, and `onEvent` emits typed operational events for retries, primary/fallback success or failure, circuit state changes, and skipped primary calls so dashboards can show whether traffic is healthy, degraded, or recovering.
 
 ### ONNX Runtime Web (Optional Real Runtime)
 
@@ -1100,12 +1103,12 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 197 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 198 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
 - [x] **Ollama runtime** - Local/cloud `/api/chat` and `/api/generate` adapter for self-hosted model testing
-- [x] **Resilient inference runtime** - Runtime wrapper with retries, operation timeouts, fallback execution, circuit breaker recovery, and raw execution metadata
+- [x] **Resilient inference runtime** - Runtime wrapper with retries, operation timeouts, fallback execution, circuit breaker recovery, typed operational events, and raw execution metadata
 - [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
 - [x] **Provider-native edge cache bindings** - Cloudflare KV, Redis/Vercel-compatible, Deno KV, and Netlify Blobs adapters
 - [x] **Pluggable streaming inference** - Provider token source contract, deltas, ordered chunks, final markers, and abort support
@@ -1143,7 +1146,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **197 tests passing**:
+Tests are organized by Clean Architecture layers with **198 tests passing**:
 
 ```
 test/
