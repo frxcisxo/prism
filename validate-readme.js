@@ -24,6 +24,7 @@ import {
   OllamaRuntime,
   OnnxRuntimeWebRuntime,
   ResilientInferenceRuntime,
+  ResilientRuntimeMonitor,
 } from './dist/inference.js';
 import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
@@ -278,7 +279,10 @@ try {
 
   let failingPrimaryCalls = 0;
   let now = 1_000;
-  const resilientEvents = [];
+  const resilientMonitor = new ResilientRuntimeMonitor({
+    maxEvents: 10,
+    now: () => now,
+  });
   const circuitRuntime = new ResilientInferenceRuntime({
     primary: {
       id: 'validation-failing-primary',
@@ -305,9 +309,7 @@ try {
       recoveryMs: 1_000,
       now: () => now,
     },
-    onEvent: (event) => {
-      resilientEvents.push(`${event.type}:${event.modelId}:${event.runtime}:${event.circuitBreaker.state}`);
-    },
+    onEvent: resilientMonitor.handleEvent,
   });
   const circuitEngine = new InferenceEngine({ runtimes: [circuitRuntime] });
   await circuitEngine.loadModel({
@@ -325,6 +327,7 @@ try {
   const skipped = await circuitEngine.infer('validation-resilient-circuit', 'Skip primary.', {
     cache: false,
   });
+  const resilientSnapshot = resilientMonitor.getSnapshot();
 
   if (
     failingPrimaryCalls !== 1
@@ -332,13 +335,11 @@ try {
     || opened.raw?.circuitBreaker?.state !== 'open'
     || skipped.raw?.innerRuntime !== 'validation-fallback-runtime'
     || skipped.raw?.errors?.[0] !== 'Primary runtime circuit is open'
-    || resilientEvents.join('|') !== [
-      'primary-failure:validation-resilient-circuit:validation-failing-primary:closed',
-      'circuit-opened:validation-resilient-circuit:validation-failing-primary:open',
-      'fallback-success:validation-resilient-circuit:validation-fallback-runtime:open',
-      'primary-skipped:validation-resilient-circuit:validation-failing-primary:open',
-      'fallback-success:validation-resilient-circuit:validation-fallback-runtime:open',
-    ].join('|')
+    || resilientSnapshot.health !== 'degraded'
+    || resilientSnapshot.totals.events !== 5
+    || resilientSnapshot.totals.circuitOpened !== 1
+    || resilientSnapshot.totals.primarySkipped !== 1
+    || resilientSnapshot.runtimes['validation-fallback-runtime']?.events !== 2
   ) {
     throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }

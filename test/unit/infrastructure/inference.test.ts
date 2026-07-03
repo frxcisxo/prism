@@ -8,6 +8,7 @@ import {
   OllamaRuntime,
   OnnxRuntimeWebRuntime,
   ResilientInferenceRuntime,
+  ResilientRuntimeMonitor,
   type InferenceConfig,
   type InferenceRuntime
 } from '../../../src/infrastructure/inference/inference';
@@ -856,6 +857,94 @@ describe('ResilientInferenceRuntime', () => {
       '2000:circuit-opened:resilient-model:primary-runtime:open',
       '2000:fallback-success:resilient-model:fallback-runtime:open',
     ]);
+  });
+
+  it('should aggregate operational events into a monitor snapshot', async () => {
+    let now = 1_000;
+    const monitor = new ResilientRuntimeMonitor({
+      maxEvents: 4,
+      now: () => now,
+    });
+    const primary: InferenceRuntime = {
+      id: 'primary-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'primary-runtime' }),
+      infer: vi.fn(async () => {
+        throw new Error('primary down');
+      }),
+    };
+    const fallback: InferenceRuntime = {
+      id: 'fallback-runtime',
+      supports: () => true,
+      load: async () => ({ runtime: 'fallback-runtime' }),
+      infer: vi.fn(async () => ({
+        text: 'fallback ok',
+        source: 'remote',
+      })),
+    };
+    const runtime = new ResilientInferenceRuntime({
+      primary,
+      fallback,
+      maxRetries: 0,
+      timeoutMs: 50,
+      circuitBreaker: {
+        failureThreshold: 1,
+        recoveryMs: 1_000,
+        now: () => now,
+      },
+      onEvent: monitor.handleEvent,
+    });
+    const session = await runtime.load(model);
+
+    await runtime.infer(model, session, { normalized: 'open-circuit' }, {});
+    now += 500;
+    await runtime.infer(model, session, { normalized: 'skip-primary' }, {});
+
+    const snapshot = monitor.getSnapshot();
+
+    expect(snapshot).toMatchObject({
+      generatedAt: now,
+      health: 'degraded',
+      totals: {
+        events: 4,
+        primaryFailures: 0,
+        fallbackSuccesses: 2,
+        fallbackFailures: 0,
+        circuitOpened: 1,
+        primarySkipped: 1,
+      },
+      circuitBreaker: {
+        state: 'open',
+        consecutiveFailures: 1,
+      },
+      models: {
+        'resilient-model': {
+          events: 4,
+          lastEventAt: now,
+          lastEventType: 'fallback-success',
+        },
+      },
+      runtimes: {
+        'fallback-runtime': {
+          events: 2,
+          lastEventAt: now,
+          lastEventType: 'fallback-success',
+        },
+      },
+    });
+    expect(snapshot.recentEvents.map(event => event.type)).toEqual([
+      'circuit-opened',
+      'fallback-success',
+      'primary-skipped',
+      'fallback-success',
+    ]);
+
+    monitor.reset();
+    expect(monitor.getSnapshot()).toMatchObject({
+      health: 'healthy',
+      totals: { events: 0 },
+      recentEvents: [],
+    });
   });
 });
 

@@ -145,6 +145,35 @@ export interface ResilientRuntimeEvent {
   circuitBreaker: ResilientCircuitBreakerStatus;
 }
 
+export interface ResilientRuntimeMonitorConfig {
+  maxEvents?: number;
+  now?: () => number;
+}
+
+export interface ResilientRuntimeMonitorEntity {
+  events: number;
+  lastEventAt: number;
+  lastEventType: ResilientRuntimeEventType;
+}
+
+export interface ResilientRuntimeMonitorSnapshot {
+  generatedAt: number;
+  health: 'healthy' | 'degraded' | 'recovering' | 'unavailable';
+  totals: {
+    events: number;
+    retries: number;
+    primaryFailures: number;
+    fallbackSuccesses: number;
+    fallbackFailures: number;
+    circuitOpened: number;
+    primarySkipped: number;
+  };
+  circuitBreaker?: ResilientCircuitBreakerStatus;
+  models: Record<string, ResilientRuntimeMonitorEntity>;
+  runtimes: Record<string, ResilientRuntimeMonitorEntity>;
+  recentEvents: ResilientRuntimeEvent[];
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -346,6 +375,95 @@ export class SimulatedInferenceRuntime implements InferenceRuntime {
     if (model.id.endsWith('.gguf')) return 'gguf';
     if (model.id.endsWith('.safetensors')) return 'safetensors';
     return 'generic';
+  }
+}
+
+export class ResilientRuntimeMonitor {
+  private events: ResilientRuntimeEvent[] = [];
+  private maxEvents: number;
+  private now: () => number;
+
+  constructor(config: ResilientRuntimeMonitorConfig = {}) {
+    this.maxEvents = config.maxEvents ?? 100;
+    this.now = config.now || (() => Date.now());
+  }
+
+  handleEvent = (event: ResilientRuntimeEvent): void => {
+    this.record(event);
+  };
+
+  record(event: ResilientRuntimeEvent): void {
+    this.events.push(event);
+    if (this.events.length > this.maxEvents) {
+      this.events.splice(0, this.events.length - this.maxEvents);
+    }
+  }
+
+  reset(): void {
+    this.events = [];
+  }
+
+  getSnapshot(): ResilientRuntimeMonitorSnapshot {
+    const totals = {
+      events: this.events.length,
+      retries: this.count('retry'),
+      primaryFailures: this.count('primary-failure'),
+      fallbackSuccesses: this.count('fallback-success'),
+      fallbackFailures: this.count('fallback-failure'),
+      circuitOpened: this.count('circuit-opened'),
+      primarySkipped: this.count('primary-skipped'),
+    };
+    const circuitBreaker = this.events[this.events.length - 1]?.circuitBreaker;
+
+    return {
+      generatedAt: this.now(),
+      health: this.determineHealth(circuitBreaker),
+      totals,
+      circuitBreaker,
+      models: this.groupBy('modelId'),
+      runtimes: this.groupBy('runtime'),
+      recentEvents: [...this.events],
+    };
+  }
+
+  private count(type: ResilientRuntimeEventType): number {
+    return this.events.filter(event => event.type === type).length;
+  }
+
+  private determineHealth(circuitBreaker?: ResilientCircuitBreakerStatus): ResilientRuntimeMonitorSnapshot['health'] {
+    const lastEvent = this.events[this.events.length - 1];
+    if (!lastEvent) {
+      return 'healthy';
+    }
+    if (lastEvent.type === 'fallback-failure') {
+      return 'unavailable';
+    }
+    if (circuitBreaker?.state === 'half-open') {
+      return 'recovering';
+    }
+    if (circuitBreaker?.state === 'open' || lastEvent.type === 'fallback-success' || lastEvent.type === 'primary-skipped') {
+      return 'degraded';
+    }
+    return 'healthy';
+  }
+
+  private groupBy(key: 'modelId' | 'runtime'): Record<string, ResilientRuntimeMonitorEntity> {
+    return this.events.reduce<Record<string, ResilientRuntimeMonitorEntity>>((groups, event) => {
+      const value = event[key];
+      if (!value) {
+        return groups;
+      }
+      const existing = groups[value] || {
+        events: 0,
+        lastEventAt: event.timestamp,
+        lastEventType: event.type,
+      };
+      existing.events += 1;
+      existing.lastEventAt = event.timestamp;
+      existing.lastEventType = event.type;
+      groups[value] = existing;
+      return groups;
+    }, {});
   }
 }
 
