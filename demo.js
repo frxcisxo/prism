@@ -1,61 +1,75 @@
 #!/usr/bin/env node
 
 /**
- * PRISM Demo Script
- * Demonstrates the AI-powered edge orchestration library
+ * PRISM vertical slice demo.
+ *
+ * Run:
+ *   npm run build
+ *   node demo.js
  */
 
-import Prism from './dist/index.mjs';
+import { PrismCRDT } from './dist/index.js';
+
+const model = {
+  id: 'edge-planner-small',
+  name: 'PRISM Edge Planner Small',
+  version: '0.1.0',
+  size: 32_000_000,
+  format: 'onnx',
+  capabilities: ['planning', 'summarization'],
+  quantization: 'int8',
+};
 
 async function main() {
-  console.log('🚀 PRISM - AI-Powered Edge Orchestration Demo\n');
+  console.log('PRISM vertical slice demo\n');
 
-  // Create a new Prism instance
-  const prism = new Prism({ nodeId: 'demo-node' });
-  console.log('✅ Created Prism instance');
+  const north = new PrismCRDT({ nodeId: 'north-edge' });
+  const south = new PrismCRDT({ nodeId: 'south-edge' });
 
-  // Register a node with capabilities
-  const nodeResult = await prism.registerNode({
-    gpu: true,
-    wasm: true,
-    quantization: true,
+  await north.registerNode({ gpu: true, wasm: true, quantization: true });
+  await south.registerNode({ gpu: false, wasm: true, quantization: true });
+
+  await north.deployModel(model);
+  console.log('1. north-edge deployed model:', model.id);
+  console.log('2. south-edge sees model before sync:', await south.isModelDeployed(model.id));
+
+  south.merge(north);
+  console.log('3. south-edge sees model after CRDT merge:', await south.isModelDeployed(model.id));
+
+  const prompt = 'Plan a resilient edge AI workflow for a mobile clinic.';
+  const first = await south.infer({
+    id: 'demo-request-1',
+    modelId: model.id,
+    input: prompt,
   });
-  console.log('✅ Registered node:', nodeResult);
 
-  // Deploy a model
-  const modelResult = await prism.deployModel({
-    id: 'llama-3.1-8b-demo',
-    name: 'Llama 3.1 8B Demo',
-    version: '1.0.0',
-    size: 4_000_000_000, // 4GB
-    quantization: 'int4',
-    maxTokens: 2048,
+  const second = await south.infer({
+    id: 'demo-request-2',
+    modelId: model.id,
+    input: prompt,
   });
-  console.log('✅ Deployed model:', modelResult);
 
-  // Perform inference
-  const inferenceResult = await prism.infer({
-    id: 'demo-req-1',
-    modelId: 'llama-3.1-8b-demo',
-    input: 'What is edge computing?',
-    priority: 'normal',
+  north.merge(south);
+
+  console.log('4. first inference:', {
+    edgeId: first.edgeId,
+    cached: first.cached,
+    latencyMs: Number(first.latency.toFixed(2)),
   });
-  console.log('✅ Inference result:', inferenceResult);
-
-  // Test caching
-  const cachedResult = await prism.infer({
-    id: 'demo-req-2',
-    modelId: 'llama-3.1-8b-demo',
-    input: 'What is edge computing?',
-    priority: 'normal',
+  console.log('5. repeated inference:', {
+    requestId: second.id,
+    cached: second.cached,
+    latencyMs: Number(second.latency.toFixed(2)),
   });
-  console.log('✅ Cached result:', cachedResult.cached ? 'HIT' : 'MISS');
+  console.log('6. converged stats:', {
+    north: north.getStats().inference,
+    south: south.getStats().inference,
+  });
 
-  // Get stats
-  const stats = prism.getStats();
-  console.log('✅ Node stats:', stats);
-
-  console.log('\n🎉 PRISM demo completed successfully!');
+  console.log('\nDemo complete: deploy, sync, route, cache, and converge all worked.');
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

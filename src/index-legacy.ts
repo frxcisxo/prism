@@ -132,7 +132,11 @@ export class PredictiveCache<T> {
 
   set(key: string, value: T, customTtl?: number): void {
     const size = this.estimateSize(value);
-    const ttl = customTtl || this.predictTTL(key);
+    const ttl = customTtl ?? this.predictTTL(key);
+    const existing = this.cache.get(key);
+    if (existing) {
+      this.currentSize -= existing.size;
+    }
 
     // Evict if needed
     while (this.currentSize + size > this.maxSize) {
@@ -181,7 +185,7 @@ export class PredictiveCache<T> {
     }
 
     const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-    return Math.min(avgInterval * 2, 24 * 60 * 60 * 1000); // Max 24 hours
+    return Math.max(1000, Math.min(avgInterval * 2, 24 * 60 * 60 * 1000)); // 1s min, 24h max
   }
 
   private recordAccess(key: string): void {
@@ -1246,21 +1250,36 @@ export class StreamingInference {
  */
 export class ModelShardManager {
   private shards = new Map<string, ModelShard[]>();
-  
-  async loadShardedModel(modelId: string, shardUrls: string[]): Promise<void> {
-    const shards: ModelShard[] = [];
-    
-    for (let i = 0; i < shardUrls.length; i++) {
-      // In production: load shard from URL
-      shards.push({
-        id: `${modelId}-shard-${i}`,
-        index: i,
-        data: new ArrayBuffer(1024 * 1024), // Placeholder
-        loaded: true,
-      });
+
+  constructor(private dependencies: ModelShardManagerDependencies = {}) {}
+
+  async loadShardedModel(
+    modelId: string,
+    shardSources: ModelShardInput[]
+  ): Promise<ModelShardManifest> {
+    if (!modelId.trim()) {
+      throw new Error('Model ID is required');
     }
-    
+
+    if (shardSources.length === 0) {
+      throw new Error('At least one shard is required');
+    }
+
+    const shards = await Promise.all(
+      shardSources.map((source, fallbackIndex) => this.loadShard(modelId, source, fallbackIndex))
+    );
+    shards.sort((a, b) => a.index - b.index);
+
+    this.ensureContiguousShards(modelId, shards);
     this.shards.set(modelId, shards);
+
+    return {
+      modelId,
+      shardCount: shards.length,
+      totalSize: shards.reduce((sum, shard) => sum + shard.size, 0),
+      sha256: await this.sha256(this.combineShardBytes(shards)),
+      shards: shards.map(({ data: _data, ...metadata }) => metadata),
+    };
   }
 
   getShard(modelId: string, shardIndex: number): ModelShard | undefined {
@@ -1271,25 +1290,221 @@ export class ModelShardManager {
   async combineShards(modelId: string): Promise<ArrayBuffer> {
     const modelShards = this.shards.get(modelId);
     if (!modelShards) throw new Error('Model not sharded');
-    
-    // Combine shards into single buffer
-    const totalSize = modelShards.reduce((sum, shard) => sum + shard.data.byteLength, 0);
+
+    return this.toArrayBuffer(this.combineShardBytes(modelShards));
+  }
+
+  listShards(modelId: string): Omit<ModelShard, 'data'>[] {
+    return (this.shards.get(modelId) || []).map(({ data: _data, ...metadata }) => metadata);
+  }
+
+  unloadModel(modelId: string): boolean {
+    return this.shards.delete(modelId);
+  }
+
+  private async loadShard(
+    modelId: string,
+    source: ModelShardInput,
+    fallbackIndex: number
+  ): Promise<ModelShard> {
+    const descriptor = this.normalizeSource(source, fallbackIndex);
+    const data = await this.resolveBytes(descriptor);
+    const size = data.byteLength;
+
+    if (descriptor.expectedSize !== undefined && descriptor.expectedSize !== size) {
+      throw new Error(
+        `Shard ${descriptor.index} for ${modelId} size mismatch: expected ${descriptor.expectedSize} bytes, received ${size} bytes`
+      );
+    }
+
+    const sha256 = await this.sha256(data);
+    const expectedSha256 = this.normalizeSha256(descriptor.sha256);
+
+    if (expectedSha256 && expectedSha256 !== sha256) {
+      throw new Error(
+        `Shard ${descriptor.index} for ${modelId} SHA-256 mismatch: expected ${expectedSha256}, received ${sha256}`
+      );
+    }
+
+    return {
+      id: descriptor.id ?? `${modelId}-shard-${descriptor.index}`,
+      index: descriptor.index,
+      data: this.toArrayBuffer(data),
+      size,
+      sha256,
+      source: descriptor.sourceLabel,
+      loaded: true,
+    };
+  }
+
+  private normalizeSource(source: ModelShardInput, fallbackIndex: number): NormalizedShardSource {
+    if (typeof source === 'string') {
+      return {
+        index: fallbackIndex,
+        url: source,
+        sourceLabel: source,
+      };
+    }
+
+    if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+      return {
+        index: fallbackIndex,
+        data: source,
+        sourceLabel: 'buffer',
+      };
+    }
+
+    return {
+      ...source,
+      index: source.index ?? fallbackIndex,
+      sourceLabel: source.url ?? source.path ?? source.id ?? 'buffer',
+    };
+  }
+
+  private async resolveBytes(source: NormalizedShardSource): Promise<Uint8Array> {
+    if (source.data) {
+      return this.toUint8Array(source.data);
+    }
+
+    if (source.path) {
+      const readFile = this.dependencies.readFile ?? await this.loadNodeReadFile();
+      return this.toUint8Array(await readFile(source.path));
+    }
+
+    if (!source.url) {
+      throw new Error(`Shard ${source.index} requires data, path, or url`);
+    }
+
+    const fetcher = this.dependencies.fetch ?? globalThis.fetch;
+    if (!fetcher) {
+      throw new Error('fetch is required to load shard URLs');
+    }
+
+    const response = await fetcher(source.url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch shard ${source.index}: HTTP ${response.status}`);
+    }
+
+    return new Uint8Array(await response.arrayBuffer());
+  }
+
+  private ensureContiguousShards(modelId: string, shards: ModelShard[]): void {
+    const seen = new Set<number>();
+
+    for (const shard of shards) {
+      if (seen.has(shard.index)) {
+        throw new Error(`Duplicate shard index ${shard.index} for ${modelId}`);
+      }
+      seen.add(shard.index);
+    }
+
+    for (let index = 0; index < shards.length; index++) {
+      if (!seen.has(index)) {
+        throw new Error(`Missing shard index ${index} for ${modelId}`);
+      }
+    }
+  }
+
+  private combineShardBytes(modelShards: ModelShard[]): Uint8Array {
+    const ordered = [...modelShards].sort((a, b) => a.index - b.index);
+    const totalSize = ordered.reduce((sum, shard) => sum + shard.data.byteLength, 0);
     const combined = new Uint8Array(totalSize);
-    
+
     let offset = 0;
-    for (const shard of modelShards) {
+    for (const shard of ordered) {
       combined.set(new Uint8Array(shard.data), offset);
       offset += shard.data.byteLength;
     }
-    
-    return combined.buffer;
+
+    return combined;
+  }
+
+  private toUint8Array(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+    if (data instanceof Uint8Array) {
+      return data;
+    }
+
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  private toArrayBuffer(data: Uint8Array): ArrayBuffer {
+    const copy = new Uint8Array(data.byteLength);
+    copy.set(data);
+    return copy.buffer;
+  }
+
+  private normalizeSha256(value?: string): string | undefined {
+    return value?.replace(/^sha256[-:]/i, '').toLowerCase();
+  }
+
+  private async sha256(data: Uint8Array): Promise<string> {
+    if (this.dependencies.sha256) {
+      return (await this.dependencies.sha256(data)).toLowerCase();
+    }
+
+    if (globalThis.crypto?.subtle) {
+      const hash = await globalThis.crypto.subtle.digest('SHA-256', this.toArrayBuffer(data));
+      return Array.from(new Uint8Array(hash))
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    const crypto = await (new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>)('node:crypto');
+    return crypto.createHash('sha256').update(data).digest('hex');
+  }
+
+  private async loadNodeReadFile(): Promise<(path: string) => Promise<Uint8Array>> {
+    const fs = await (new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<any>)('node:fs/promises');
+    return async (path: string) => new Uint8Array(await fs.readFile(path));
   }
 }
 
-interface ModelShard {
+export interface ModelShardManagerDependencies {
+  fetch?: typeof fetch;
+  readFile?: (path: string) => Promise<ArrayBuffer | ArrayBufferView>;
+  sha256?: (data: Uint8Array) => Promise<string> | string;
+}
+
+export type ModelShardInput = string | ArrayBuffer | ArrayBufferView | {
+  id?: string;
+  index?: number;
+  url?: string;
+  path?: string;
+  data?: ArrayBuffer | ArrayBufferView;
+  sha256?: string;
+  expectedSize?: number;
+};
+
+export interface ModelShardManifest {
+  modelId: string;
+  shardCount: number;
+  totalSize: number;
+  sha256: string;
+  shards: Omit<ModelShard, 'data'>[];
+}
+
+interface NormalizedShardSource {
+  id?: string;
+  index: number;
+  url?: string;
+  path?: string;
+  data?: ArrayBuffer | ArrayBufferView;
+  sha256?: string;
+  expectedSize?: number;
+  sourceLabel: string;
+}
+
+export interface ModelShard {
   id: string;
   index: number;
   data: ArrayBuffer;
+  size: number;
+  sha256: string;
+  source: string;
   loaded: boolean;
 }
 

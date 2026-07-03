@@ -6,6 +6,7 @@ import {
   DenoDeployAdapter,
   createEdgeAdapter,
   EdgeConfig,
+  EdgeInferenceHandler,
 } from '../../../src/infrastructure/edge/edge';
 
 describe('Edge Adapters', () => {
@@ -35,13 +36,15 @@ describe('Edge Adapters', () => {
       expect(result.data).toEqual({
         id: 'test-req',
         modelId: 'test-model',
-        output: expect.stringContaining('Edge inference at us-east-1'),
+        output: expect.stringContaining('vercel inference at us-east-1'),
         latency: expect.any(Number),
         edgeId: 'vercel-edge',
         timestamp: expect.any(Number),
+        cached: false,
       });
       expect(result.cached).toBe(false);
       expect(result.latency).toBeGreaterThan(0);
+      expect(response.headers.get('cache-control')).toBe('no-store');
     });
 
     it('should handle invalid requests', async () => {
@@ -55,9 +58,60 @@ describe('Edge Adapters', () => {
       const response = await adapter.handleRequest(invalidRequest);
       const result = await response.json();
 
-      expect(response.status).toBe(500);
+      expect(response.status).toBe(400);
       expect(result.success).toBe(false);
       expect(result.error.code).toBe('INVALID_REQUEST');
+    });
+
+    it('should use an injected inference handler', async () => {
+      const infer = vi.fn<EdgeInferenceHandler>().mockResolvedValue({
+        id: 'test-req',
+        modelId: 'test-model',
+        output: { label: 'real-runtime' },
+        latency: 7,
+        edgeId: 'custom-edge',
+        timestamp: 123,
+      });
+      const adapter = new VercelEdgeAdapter(config, { infer });
+
+      const response = await adapter.handleRequest(mockRequest);
+      const result = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(result.data.output).toEqual({ label: 'real-runtime' });
+      expect(result.data.edgeId).toBe('custom-edge');
+      expect(infer).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'test-req', modelId: 'test-model' }),
+        expect.objectContaining({
+          platform: 'vercel',
+          edgeId: 'vercel-edge',
+          region: 'us-east-1',
+          cacheKey: expect.stringMatching(/^prism:test-model:/),
+        })
+      );
+    });
+
+    it('should serve repeated requests from edge cache', async () => {
+      const infer = vi.fn<EdgeInferenceHandler>().mockResolvedValue({
+        id: 'test-req',
+        modelId: 'test-model',
+        output: 'cached output',
+        latency: 5,
+        edgeId: 'vercel-edge',
+        timestamp: 123,
+      });
+      const adapter = new VercelEdgeAdapter(config, { infer });
+
+      const first = await adapter.handleRequest(mockRequest);
+      const second = await adapter.handleRequest(mockRequest);
+      const firstJson = await first.json();
+      const secondJson = await second.json();
+
+      expect(firstJson.cached).toBe(false);
+      expect(secondJson.cached).toBe(true);
+      expect(secondJson.data.cached).toBe(true);
+      expect(secondJson.data.output).toBe('cached output');
+      expect(infer).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -75,7 +129,7 @@ describe('Edge Adapters', () => {
 
       expect(response.status).toBe(200);
       expect(result.success).toBe(true);
-      expect(result.data.output).toBe('Cloudflare edge inference');
+      expect(result.data.output).toBe('cloudflare inference');
       expect(result.data.edgeId).toBe('cloudflare-worker');
     });
   });
@@ -89,7 +143,7 @@ describe('Edge Adapters', () => {
 
       expect(response.status).toBe(200);
       expect(result.success).toBe(true);
-      expect(result.data.output).toBe('Netlify edge inference');
+      expect(result.data.output).toBe('netlify inference');
       expect(result.data.edgeId).toBe('netlify-edge');
     });
   });
@@ -103,7 +157,7 @@ describe('Edge Adapters', () => {
 
       expect(response.status).toBe(200);
       expect(result.success).toBe(true);
-      expect(result.data.output).toBe('Deno Deploy edge inference');
+      expect(result.data.output).toBe('deno-deploy inference');
       expect(result.data.edgeId).toBe('deno-deploy');
     });
   });

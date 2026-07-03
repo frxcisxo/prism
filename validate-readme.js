@@ -1,309 +1,202 @@
 #!/usr/bin/env node
 
 /**
- * PRISM Validation Script
- * Tests that the implementation matches the README documentation
+ * PRISM smoke validation.
+ *
+ * This script validates the public package surface after `npm run build`.
  */
 
-import Prism from './dist/index.js';
-import { InferenceEngine } from './dist/inference.js';
+import { ModelShardManager, PrismCRDT } from './dist/index.js';
+import { InferenceEngine, OnnxRuntimeWebRuntime } from './dist/inference.js';
 import { VercelEdgeAdapter, CloudflareEdgeAdapter } from './dist/edge.js';
+import { readFile } from 'node:fs/promises';
 
-console.log('🔮 PRISM - Validation Script');
-console.log('Testing that implementation matches README documentation...\n');
+const addOneSha256 = 'b7d06325e6a907bdad72053370bc5d3501f599c89eb7e0c9577e556527e83eef';
 
-// Test 1: Initialize PRISM Node
-console.log('1. Testing PRISM Node Initialization');
-try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  console.log('✅ Prism instance created successfully');
-} catch (error) {
-  console.log('❌ Failed to create Prism instance:', error.message);
+const model = {
+  id: 'validation-model',
+  name: 'Validation Model',
+  version: '1.0.0',
+  format: 'onnx',
+  size: 1_000_000,
+  capabilities: ['validation'],
+  quantization: 'int8',
+};
+
+function fail(label, error) {
+  console.error(`FAIL ${label}:`, error instanceof Error ? error.message : error);
   process.exit(1);
 }
 
-// Test 2: Register Node
-console.log('\n2. Testing Node Registration');
+console.log('PRISM smoke validation\n');
+
 try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  const result = await prism.registerNode({
-    gpu: true,
-    wasm: true,
-    quantization: true,
+  const a = new PrismCRDT({ nodeId: 'validation-a' });
+  const b = new PrismCRDT({ nodeId: 'validation-b' });
+
+  await a.registerNode({ gpu: true, wasm: true, quantization: true });
+  await b.registerNode({ gpu: false, wasm: true, quantization: true });
+  await a.deployModel(model);
+  b.merge(a);
+
+  const first = await b.infer({
+    id: 'validation-1',
+    modelId: model.id,
+    input: 'Validate CRDT cache and routing.',
   });
-  console.log('✅ Node registered:', result);
-} catch (error) {
-  console.log('❌ Failed to register node:', error.message);
-  process.exit(1);
-}
-
-// Test 3: Deploy Model
-console.log('\n3. Testing Model Deployment');
-try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  await prism.registerNode({ gpu: true });
-
-  const deployResult = await prism.deployModel({
-    id: 'llama-3.1-8b',
-    name: 'Meta Llama 3.1 8B Instruct',
-    version: '1.0.0',
-    size: 3_600_000_000,
-    quantization: 'int4',
-    maxTokens: 2048,
-    context: 8192,
-  });
-  console.log('✅ Model deployed:', deployResult);
-} catch (error) {
-  console.log('❌ Failed to deploy model:', error.message);
-  process.exit(1);
-}
-
-// Test 4: Simple Inference
-console.log('\n4. Testing Simple Inference');
-try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  await prism.registerNode({ gpu: true });
-  await prism.deployModel({
-    id: 'llama-3.1-8b',
-    name: 'Llama 3.1 8B',
-    version: '1.0.0',
-    size: 3_600_000_000,
+  const second = await b.infer({
+    id: 'validation-2',
+    modelId: model.id,
+    input: 'Validate CRDT cache and routing.',
   });
 
-  const result = await prism.infer({
-    id: 'req-001',
-    modelId: 'llama-3.1-8b',
-    input: 'What is edge AI?',
-    priority: 'high',
-  });
-
-  console.log('✅ Inference result:', {
-    id: result.id,
-    modelId: result.modelId,
-    latency: result.latency,
-    edgeId: result.edgeId,
-    cached: result.cached,
-  });
-} catch (error) {
-  console.log('❌ Failed inference:', error.message);
-  process.exit(1);
-}
-
-// Test 5: Caching
-console.log('\n5. Testing Caching');
-try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  await prism.registerNode({ gpu: true });
-  await prism.deployModel({
-    id: 'llama-3.1-8b',
-    name: 'Llama 3.1 8B',
-    version: '1.0.0',
-    size: 3_600_000_000,
-  });
-
-  // First call
-  const result1 = await prism.infer({
-    id: 'req-1',
-    modelId: 'llama-3.1-8b',
-    input: 'What is TypeScript?',
-  });
-  console.log(`First call latency: ${result1.latency.toFixed(2)}ms`);
-
-  // Second call (should be cached)
-  const result2 = await prism.infer({
-    id: 'req-2',
-    modelId: 'llama-3.1-8b',
-    input: 'What is TypeScript?', // Same input
-  });
-  console.log(`Second call latency: ${result2.latency.toFixed(2)}ms, cached: ${result2.cached}`);
-
-  if (result2.cached) {
-    console.log('✅ Caching works correctly');
-  } else {
-    console.log('❌ Caching not working');
+  if (first.cached !== false || second.cached !== true) {
+    throw new Error('CRDT cache did not report expected miss/hit sequence');
   }
+
+  console.log('OK PrismCRDT deploy/merge/infer/cache');
 } catch (error) {
-  console.log('❌ Caching test failed:', error.message);
-  process.exit(1);
+  fail('PrismCRDT', error);
 }
 
-// Test 6: Offline Mode
-console.log('\n6. Testing Offline Mode');
 try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  await prism.registerNode({ gpu: true });
-  await prism.deployModel({
-    id: 'llama-3.1-8b',
-    name: 'Llama 3.1 8B',
+  const engine = new InferenceEngine({ maxBatchSize: 4, quantization: 'int8' });
+  await engine.loadModel(model);
+
+  const single = await engine.infer(model.id, 'Validate inference engine.');
+  const batch = await engine.batchInfer(model.id, ['one', 'two', 'three']);
+
+  if (!single.text || batch.length !== 3) {
+    throw new Error('Inference engine returned unexpected output');
+  }
+
+  console.log('OK InferenceEngine infer/batchInfer');
+} catch (error) {
+  fail('InferenceEngine', error);
+}
+
+try {
+  const runtime = new OnnxRuntimeWebRuntime({
+    importOrt: () => import('onnxruntime-web'),
+    readFile: async (path) => new Uint8Array(await readFile(path)),
+  });
+  const engine = new InferenceEngine({ runtimes: [runtime] });
+  await engine.loadModel({
+    id: 'validation-onnx',
+    name: 'Validation ONNX',
     version: '1.0.0',
-    size: 3_600_000_000,
+    format: 'onnx',
+    size: 112,
+    capabilities: ['validation'],
+    metadata: {
+      modelPath: 'test/fixtures/onnx/add-one.onnx',
+      executionProviders: ['wasm'],
+      sha256: addOneSha256,
+      expectedSize: 112,
+    },
+  });
+  const result = await engine.infer('validation-onnx', {
+    inputName: 'X',
+    data: [41],
+    dims: [1],
+    type: 'float32',
+  }, {
+    cache: false,
   });
 
-  // Go offline
-  prism.setOffline();
-  console.log('✅ Set offline mode');
+  const output = result.raw?.outputs?.Y;
+  if (!result.text.includes('ONNX inference produced') || Array.from(output?.data || [])[0] !== 42) {
+    throw new Error('ONNX runtime smoke check returned unexpected output');
+  }
 
-  // Try inference (should queue)
-  try {
-    await prism.infer({
-      id: 'req-offline',
-      modelId: 'llama-3.1-8b',
-      input: 'Offline test',
-    });
-  } catch (error) {
-    if (error.message.includes('OFFLINE')) {
-      console.log('✅ Request queued while offline');
-    } else {
-      throw error;
+  console.log('OK optional ONNX runtime real fixture');
+} catch (error) {
+  fail('optional ONNX runtime', error);
+}
+
+try {
+  let inferenceCalls = 0;
+  const vercel = new VercelEdgeAdapter({
+    platform: 'vercel',
+    region: 'validation',
+    cacheTtl: 60,
+  }, {
+    infer: async (request, context) => {
+      inferenceCalls += 1;
+
+      return {
+        id: request.id,
+        modelId: request.modelId,
+        output: {
+          handler: 'injected',
+          edgeId: context.edgeId,
+        },
+        latency: 3,
+        edgeId: context.edgeId,
+        timestamp: Date.now(),
+      };
+    },
+  });
+  const cloudflare = new CloudflareEdgeAdapter({
+    platform: 'cloudflare',
+    region: 'validation',
+    cacheTtl: 60,
+  });
+
+  for (const adapter of [vercel, cloudflare]) {
+    const response = await adapter.handleRequest(new Request('https://prism.local', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: 'edge-validation',
+        modelId: model.id,
+        input: 'Validate edge adapter.',
+      }),
+    }));
+    const body = await response.json();
+    if (!body.success) {
+      throw new Error('Edge adapter returned unsuccessful response');
+    }
+    if (response.headers.get('cache-control') !== 'no-store') {
+      throw new Error('Edge adapter did not protect HTTP cache headers');
     }
   }
 
-  // Reconnect
-  await prism.reconnect();
-  console.log('✅ Reconnected successfully');
-} catch (error) {
-  console.log('❌ Offline test failed:', error.message);
-  process.exit(1);
-}
-
-// Test 7: Statistics
-console.log('\n7. Testing Statistics');
-try {
-  const prism = new Prism({ nodeId: 'test-node-1' });
-  await prism.registerNode({ gpu: true });
-  await prism.deployModel({
-    id: 'llama-3.1-8b',
-    name: 'Llama 3.1 8B',
-    version: '1.0.0',
-    size: 3_600_000_000,
-  });
-
-  const stats = prism.getStats();
-  console.log('✅ Stats retrieved:', stats);
-
-  if (stats.models.includes('llama-3.1-8b')) {
-    console.log('✅ Model listed in stats');
-  } else {
-    console.log('❌ Model not found in stats');
-  }
-} catch (error) {
-  console.log('❌ Stats test failed:', error.message);
-  process.exit(1);
-}
-
-// Test 8: Edge Adapters
-console.log('\n8. Testing Edge Adapters');
-try {
-  // Test Vercel adapter
-  const vercelAdapter = new VercelEdgeAdapter({
-    platform: 'vercel',
-    region: 'us-east-1',
-    cacheTtl: 3600,
-  });
-
-  const mockRequest1 = new Request('http://localhost', {
+  const cachedResponse = await vercel.handleRequest(new Request('https://prism.local', {
     method: 'POST',
     body: JSON.stringify({
-      id: 'edge-test',
-      modelId: 'llama-3.1-8b',
-      input: 'Edge test',
+      id: 'edge-validation',
+      modelId: model.id,
+      input: 'Validate edge adapter.',
     }),
-  });
+  }));
+  const cachedBody = await cachedResponse.json();
 
-  const vercelResponse = await vercelAdapter.handleRequest(mockRequest1);
-  const vercelData = await vercelResponse.json();
-
-  if (vercelData.success) {
-    console.log('✅ Vercel adapter works');
-  } else {
-    console.log('❌ Vercel adapter failed');
+  if (inferenceCalls !== 1 || cachedBody.cached !== true || cachedBody.data.output.handler !== 'injected') {
+    throw new Error('Edge adapter did not use injected handler/cache as expected');
   }
 
-  // Test Cloudflare adapter
-  const cfAdapter = new CloudflareEdgeAdapter({
-    platform: 'cloudflare',
-    region: 'us-east-1',
-  });
-
-  const mockRequest2 = new Request('http://localhost', {
-    method: 'POST',
-    body: JSON.stringify({
-      id: 'edge-test',
-      modelId: 'llama-3.1-8b',
-      input: 'Edge test',
-    }),
-  });
-
-  const cfResponse = await cfAdapter.handleRequest(mockRequest2);
-  const cfData = await cfResponse.json();
-
-  if (cfData.success) {
-    console.log('✅ Cloudflare adapter works');
-  } else {
-    console.log('❌ Cloudflare adapter failed');
-  }
+  console.log('OK edge adapters infer/cache/security headers');
 } catch (error) {
-  console.log('❌ Edge adapters test failed:', error.message);
-  process.exit(1);
+  fail('edge adapters', error);
 }
 
-// Test 9: Batch Inference
-console.log('\n9. Testing Batch Inference');
 try {
-  const engine = new InferenceEngine({
-    maxBatchSize: 32,
-    quantization: 'int8',
-    gpuEnabled: true,
-  });
+  const manager = new ModelShardManager();
+  const first = new Uint8Array([1, 2, 3]);
+  const second = new Uint8Array([4, 5]);
+  const manifest = await manager.loadShardedModel('validation-sharded-model', [
+    { index: 0, data: first, expectedSize: first.byteLength },
+    { index: 1, data: second, expectedSize: second.byteLength },
+  ]);
+  const combined = new Uint8Array(await manager.combineShards('validation-sharded-model'));
 
-  await engine.loadModel({
-    id: 'llama-3.1-8b',
-    name: 'Llama 3.1 8B',
-    version: '1.0.0',
-    size: 3_600_000_000,
-  });
-
-  const inputs = [
-    'What is AI?',
-    'Explain quantum computing',
-    'What is blockchain?',
-  ];
-
-  const results = await engine.inferBatch('llama-3.1-8b', inputs);
-  console.log(`✅ Batch inference completed: ${results.length} results`);
-
-  const stats = engine.getStats();
-  console.log('✅ Inference stats:', stats);
-} catch (error) {
-  console.log('❌ Batch inference test failed:', error.message);
-  process.exit(1);
-}
-
-// Test 10: Model Formats
-console.log('\n10. Testing Model Format Support');
-try {
-  const engine = new InferenceEngine();
-
-  // Test different formats
-  const formats = [
-    { id: 'model.onnx', name: 'ONNX Model' },
-    { id: 'model.tflite', name: 'TensorFlow Lite Model' },
-    { id: 'model.gguf', name: 'GGUF Model' },
-    { id: 'generic-model', name: 'Generic Model' },
-  ];
-
-  for (const format of formats) {
-    const result = await engine.loadModel({
-      ...format,
-      version: '1.0.0',
-      size: 1000000,
-    });
-    console.log(`✅ Loaded ${format.name}: ${result.status}`);
+  if (manifest.shardCount !== 2 || manifest.totalSize !== 5 || combined.join(',') !== '1,2,3,4,5') {
+    throw new Error('Model sharding smoke check returned unexpected bytes');
   }
+
+  console.log('OK verified model sharding');
 } catch (error) {
-  console.log('❌ Model format test failed:', error.message);
-  process.exit(1);
+  fail('model sharding', error);
 }
 
-console.log('\n🎉 All tests passed! PRISM implementation matches README documentation.');
-console.log('The essence of PRISM is preserved and working as documented.');
+console.log('\nAll smoke checks passed.');

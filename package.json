@@ -3,24 +3,24 @@
   "version": "1.0.2",
   "type": "module",
   "description": "🔮 AI-Powered Edge Orchestration & Distributed Inference. Deploy ML models at the edge with real-time sync, automatic conflict resolution, and zero downtime.",
-  "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./edge": {
-      "import": "./dist/edge.mjs",
-      "require": "./dist/edge.js",
-      "types": "./dist/edge.d.ts"
+      "types": "./dist/edge.d.ts",
+      "import": "./dist/edge.js",
+      "require": "./dist/edge.cjs"
     },
     "./inference": {
-      "import": "./dist/inference.mjs",
-      "require": "./dist/inference.js",
-      "types": "./dist/inference.d.ts"
+      "types": "./dist/inference.d.ts",
+      "import": "./dist/inference.js",
+      "require": "./dist/inference.cjs"
     }
   },
   "files": [
@@ -29,16 +29,20 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap",
-    "build:optimized": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap --target es2022",
+    "build": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap --clean",
+    "build:optimized": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap --target es2022 --clean",
     "dev": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --watch",
+    "demo": "npm run build && node demo.js",
+    "demo:onnx": "npm run build && node demo-onnx.js",
+    "demo:all": "npm run build && node demo.js && node demo-onnx.js",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:performance": "vitest --run --reporter=verbose bench/",
+    "validate": "npm run build && node validate-readme.js",
     "lint": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "size-check": "npm run build && du -sh dist/",
-    "prepublishOnly": "npm run build:optimized && npm run test"
+    "prepublishOnly": "npm run type-check && npm run build:optimized && npm test -- --run && node validate-readme.js"
   },
   "keywords": [
     "edge-ai",
@@ -67,6 +71,7 @@
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
     "eslint": "^8.56.0",
+    "onnxruntime-web": "^1.27.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
     "vitest": "^1.0.0"
@@ -75,6 +80,14 @@
     "libsodium-wrappers": "^0.7.13",
     "node-fetch": "^3.3.2",
     "zod": "^3.22.0"
+  },
+  "peerDependencies": {
+    "onnxruntime-web": ">=1.20.0 <2"
+  },
+  "peerDependenciesMeta": {
+    "onnxruntime-web": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=20.0.0"

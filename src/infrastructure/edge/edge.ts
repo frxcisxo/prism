@@ -5,10 +5,13 @@
 
 import type { InferenceRequest, InferenceResult } from '../../index';
 
+export type EdgePlatform = 'vercel' | 'cloudflare' | 'netlify' | 'deno-deploy';
+
 export interface EdgeConfig {
-  platform: 'vercel' | 'cloudflare' | 'netlify' | 'deno-deploy';
+  platform: EdgePlatform;
   region?: string;
   cacheTtl?: number;
+  edgeId?: string;
 }
 
 export interface EdgeResponse<T = any> {
@@ -22,93 +25,205 @@ export interface EdgeResponse<T = any> {
   cached: boolean;
 }
 
-/**
- * Vercel Edge Functions adapter
- * Ultra-low latency with Vercel's global network
- */
-export class VercelEdgeAdapter {
-  constructor(private config: EdgeConfig) {}
+export interface EdgeRequestContext {
+  platform: EdgePlatform;
+  edgeId: string;
+  region?: string;
+  cacheKey: string;
+  request: Request;
+}
 
-  /**
-   * Handle request at edge
-   * Returns in <10ms from nearest location
-   */
-  async handleRequest(
-    request: Request
-  ): Promise<Response> {
+export interface EdgeCache {
+  get<T>(key: string): Promise<T | undefined>;
+  set<T>(key: string, value: T, ttlSeconds: number): Promise<void>;
+}
+
+export type EdgeInferenceHandler = (
+  request: InferenceRequest,
+  context: EdgeRequestContext
+) => Promise<InferenceResult>;
+
+export interface EdgeAdapterDependencies {
+  cache?: EdgeCache;
+  infer?: EdgeInferenceHandler;
+}
+
+class MemoryEdgeCache implements EdgeCache {
+  private entries = new Map<string, { expiresAt: number; value: unknown }>();
+
+  async get<T>(key: string): Promise<T | undefined> {
+    const entry = this.entries.get(key);
+
+    if (!entry) {
+      return undefined;
+    }
+
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+
+    return entry.value as T;
+  }
+
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) {
+      return;
+    }
+
+    this.entries.set(key, {
+      expiresAt: Date.now() + ttlSeconds * 1000,
+      value,
+    });
+  }
+}
+
+abstract class BaseEdgeAdapter {
+  protected readonly cache: EdgeCache;
+  protected readonly infer: EdgeInferenceHandler;
+
+  constructor(
+    protected readonly config: EdgeConfig,
+    dependencies: EdgeAdapterDependencies = {}
+  ) {
+    this.cache = dependencies.cache ?? new MemoryEdgeCache();
+    this.infer = dependencies.infer ?? this.defaultInfer.bind(this);
+  }
+
+  async handleRequest(request: Request): Promise<Response> {
     const startTime = performance.now();
 
     try {
-      const body = await request.json() as InferenceRequest;
-      
-      // Validate
-      if (!body.id || !body.modelId || !body.input) {
-        return this.errorResponse('INVALID_REQUEST', 'Missing required fields', startTime);
+      const body = await request.json() as Partial<InferenceRequest>;
+      const validationError = this.validateRequest(body);
+
+      if (validationError) {
+        return this.errorResponse('INVALID_REQUEST', validationError, startTime, 400);
       }
 
-      // Check cache (Vercel KV)
-      // In production: const cached = await kv.get(cacheKey);
-      // For now, simulate:
-      const cached = null;
+      const inferenceRequest = body as InferenceRequest;
+      const cacheKey = await this.createCacheKey(inferenceRequest);
+      const cached = await this.cache.get<InferenceResult>(cacheKey);
 
       if (cached) {
-        const latency = performance.now() - startTime;
-        return this.jsonResponse(
-          {
-            success: true,
-            data: cached,
-            latency,
-            cached: true,
-          },
-          200,
-          { 'cache-control': 'public, max-age=3600' }
-        );
+        return this.successResponse(cached, startTime, true);
       }
 
-      // Route to inference
-      const result: InferenceResult = {
-        id: body.id,
-        modelId: body.modelId,
-        output: `Edge inference at ${this.config.region}`,
-        latency: performance.now() - startTime,
-        edgeId: 'vercel-edge',
-        timestamp: Date.now(),
+      const context: EdgeRequestContext = {
+        platform: this.config.platform,
+        edgeId: this.edgeId,
+        region: this.config.region,
+        cacheKey,
+        request,
       };
+      const result = await this.infer(inferenceRequest, context);
+      const ttl = this.config.cacheTtl ?? 3600;
 
-      // Cache result
-      // In production: await kv.set(cacheKey, result, { ex: this.config.cacheTtl || 3600 });
+      await this.cache.set(cacheKey, result, ttl);
 
-      return this.jsonResponse(
-        {
-          success: true,
-          data: result,
-          latency: result.latency,
-          cached: false,
-        },
-        200,
-        { 'cache-control': `public, max-age=${this.config.cacheTtl || 3600}` }
-      );
+      return this.successResponse(result, startTime, false);
     } catch (error) {
-      return this.errorResponse('INFERENCE_ERROR', String(error), startTime);
+      return this.errorResponse('INFERENCE_ERROR', this.safeErrorMessage(error), startTime, 500);
     }
   }
 
-  private jsonResponse(
-    data: any,
-    status: number,
-    headers?: Record<string, string>
+  protected abstract get edgeLocation(): string;
+  protected abstract get edgeId(): string;
+
+  protected async defaultInfer(
+    request: InferenceRequest,
+    context: EdgeRequestContext
+  ): Promise<InferenceResult> {
+    return {
+      id: request.id,
+      modelId: request.modelId,
+      output: `${this.edgeLocation} inference${context.region ? ` at ${context.region}` : ''}`,
+      latency: 0,
+      edgeId: context.edgeId,
+      timestamp: Date.now(),
+      cached: false,
+    } as InferenceResult;
+  }
+
+  private validateRequest(body: Partial<InferenceRequest>): string | undefined {
+    if (!body || typeof body !== 'object') {
+      return 'Request body must be a JSON object';
+    }
+
+    if (typeof body.id !== 'string' || body.id.trim().length === 0) {
+      return 'Missing required field: id';
+    }
+
+    if (typeof body.modelId !== 'string' || body.modelId.trim().length === 0) {
+      return 'Missing required field: modelId';
+    }
+
+    if (body.input === undefined || body.input === null) {
+      return 'Missing required field: input';
+    }
+
+    return undefined;
+  }
+
+  private async createCacheKey(request: InferenceRequest): Promise<string> {
+    const material = JSON.stringify({
+      modelId: request.modelId,
+      input: request.input,
+      options: request.options,
+      edgeId: request.edgeId,
+    });
+    const bytes = new TextEncoder().encode(material);
+
+    if (!globalThis.crypto?.subtle) {
+      throw new Error('Web Crypto SHA-256 is required to build secure edge cache keys');
+    }
+
+    const hash = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+
+    return `prism:${request.modelId}:${Array.from(new Uint8Array(hash))
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('')}`;
+  }
+
+  private successResponse(
+    result: InferenceResult,
+    startTime: number,
+    cached: boolean
   ): Response {
+    const latency = performance.now() - startTime;
+
+    return this.jsonResponse(
+      {
+        success: true,
+        data: {
+          ...result,
+          cached,
+          latency: cached ? latency : result.latency || latency,
+        },
+        latency,
+        cached,
+      },
+      200
+    );
+  }
+
+  private jsonResponse(data: EdgeResponse<InferenceResult>, status: number): Response {
     return new Response(JSON.stringify(data), {
       status,
       headers: {
         'content-type': 'application/json',
-        'x-edge-location': 'vercel',
-        ...headers,
+        'cache-control': 'no-store',
+        'x-edge-location': this.edgeLocation,
       },
     });
   }
 
-  private errorResponse(code: string, message: string, startTime: number): Response {
+  private errorResponse(
+    code: string,
+    message: string,
+    startTime: number,
+    status: number
+  ): Response {
     return this.jsonResponse(
       {
         success: false,
@@ -116,8 +231,30 @@ export class VercelEdgeAdapter {
         latency: performance.now() - startTime,
         cached: false,
       },
-      500
+      status
     );
+  }
+
+  private safeErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Vercel Edge Functions adapter
+ * Ultra-low latency with Vercel's global network
+ */
+export class VercelEdgeAdapter extends BaseEdgeAdapter {
+  constructor(config: EdgeConfig, dependencies?: EdgeAdapterDependencies) {
+    super(config, dependencies);
+  }
+
+  protected get edgeLocation(): string {
+    return 'vercel';
+  }
+
+  protected get edgeId(): string {
+    return this.config.edgeId ?? 'vercel-edge';
   }
 }
 
@@ -125,118 +262,34 @@ export class VercelEdgeAdapter {
  * Cloudflare Workers adapter
  * Ultra-fast with Wasm support
  */
-export class CloudflareEdgeAdapter {
-  constructor(private config: EdgeConfig) {}
+export class CloudflareEdgeAdapter extends BaseEdgeAdapter {
+  constructor(config: EdgeConfig, dependencies?: EdgeAdapterDependencies) {
+    super(config, dependencies);
+  }
 
-  async handleRequest(
-    request: Request
-  ): Promise<Response> {
-    const startTime = performance.now();
+  protected get edgeLocation(): string {
+    return 'cloudflare';
+  }
 
-    try {
-      const body = await request.json() as InferenceRequest;
-
-      // Use Cloudflare KV for caching
-      // Try to get from cache
-      // const cached = await env.PRISM_CACHE.get(cacheKey);
-      
-      const result: InferenceResult = {
-        id: body.id,
-        modelId: body.modelId,
-        output: `Cloudflare edge inference`,
-        latency: performance.now() - startTime,
-        edgeId: 'cloudflare-worker',
-        timestamp: Date.now(),
-      };
-
-      // Set cache
-      // await env.PRISM_CACHE.put(cacheKey, JSON.stringify(result), {
-      //   expirationTtl: this.config.cacheTtl || 3600,
-      // });
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          data: result,
-          latency: result.latency,
-          cached: false,
-        }),
-        {
-          status: 200,
-          headers: {
-            'content-type': 'application/json',
-            'x-edge-location': 'cloudflare',
-            'cache-control': `public, max-age=${this.config.cacheTtl || 3600}`,
-          },
-        }
-      );
-    } catch (error) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: {
-            code: 'INFERENCE_ERROR',
-            message: String(error),
-          },
-          latency: performance.now() - startTime,
-          cached: false,
-        }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
-    }
+  protected get edgeId(): string {
+    return this.config.edgeId ?? 'cloudflare-worker';
   }
 }
 
 /**
  * Netlify Edge Functions adapter
  */
-export class NetlifyEdgeAdapter {
-  async handleRequest(
-    request: Request
-  ): Promise<Response> {
-    const startTime = performance.now();
+export class NetlifyEdgeAdapter extends BaseEdgeAdapter {
+  constructor(config: Partial<EdgeConfig> = {}, dependencies?: EdgeAdapterDependencies) {
+    super({ ...config, platform: 'netlify' }, dependencies);
+  }
 
-    try {
-      const body = await request.json() as InferenceRequest;
+  protected get edgeLocation(): string {
+    return 'netlify';
+  }
 
-      const result: InferenceResult = {
-        id: body.id,
-        modelId: body.modelId,
-        output: `Netlify edge inference`,
-        latency: performance.now() - startTime,
-        edgeId: 'netlify-edge',
-        timestamp: Date.now(),
-      };
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          data: result,
-          latency: result.latency,
-          cached: false,
-        }),
-        {
-          status: 200,
-          headers: {
-            'content-type': 'application/json',
-            'x-edge-location': 'netlify',
-          },
-        }
-      );
-    } catch (error) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: {
-            code: 'INFERENCE_ERROR',
-            message: String(error),
-          },
-          latency: performance.now() - startTime,
-          cached: false,
-        }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
-    }
+  protected get edgeId(): string {
+    return this.config.edgeId ?? 'netlify-edge';
   }
 }
 
@@ -244,67 +297,36 @@ export class NetlifyEdgeAdapter {
  * Deno Deploy adapter
  * Native TypeScript, security-first
  */
-export class DenoDeployAdapter {
-  async handleRequest(request: Request): Promise<Response> {
-    const startTime = performance.now();
+export class DenoDeployAdapter extends BaseEdgeAdapter {
+  constructor(config: Partial<EdgeConfig> = {}, dependencies?: EdgeAdapterDependencies) {
+    super({ ...config, platform: 'deno-deploy' }, dependencies);
+  }
 
-    try {
-      const body = await request.json() as InferenceRequest;
+  protected get edgeLocation(): string {
+    return 'deno-deploy';
+  }
 
-      const result: InferenceResult = {
-        id: body.id,
-        modelId: body.modelId,
-        output: `Deno Deploy edge inference`,
-        latency: performance.now() - startTime,
-        edgeId: 'deno-deploy',
-        timestamp: Date.now(),
-      };
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          data: result,
-          latency: result.latency,
-          cached: false,
-        }),
-        {
-          status: 200,
-          headers: {
-            'content-type': 'application/json',
-            'x-edge-location': 'deno-deploy',
-          },
-        }
-      );
-    } catch (error) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: {
-            code: 'INFERENCE_ERROR',
-            message: String(error),
-          },
-          latency: performance.now() - startTime,
-          cached: false,
-        }),
-        { status: 500, headers: { 'content-type': 'application/json' } }
-      );
-    }
+  protected get edgeId(): string {
+    return this.config.edgeId ?? 'deno-deploy';
   }
 }
 
 /**
  * Factory for creating edge adapters
  */
-export function createEdgeAdapter(config: EdgeConfig) {
+export function createEdgeAdapter(
+  config: EdgeConfig,
+  dependencies?: EdgeAdapterDependencies
+) {
   switch (config.platform) {
     case 'vercel':
-      return new VercelEdgeAdapter(config);
+      return new VercelEdgeAdapter(config, dependencies);
     case 'cloudflare':
-      return new CloudflareEdgeAdapter(config);
+      return new CloudflareEdgeAdapter(config, dependencies);
     case 'netlify':
-      return new NetlifyEdgeAdapter();
+      return new NetlifyEdgeAdapter(config, dependencies);
     case 'deno-deploy':
-      return new DenoDeployAdapter();
+      return new DenoDeployAdapter(config, dependencies);
     default:
       throw new Error(`Unknown edge platform: ${config.platform}`);
   }

@@ -118,6 +118,13 @@ export class PrismCRDT extends EventEmitter {
     };
   }
 
+  /**
+   * Check if a model is deployed in the CRDT registry.
+   */
+  async isModelDeployed(modelId: string): Promise<boolean> {
+    return this.modelRegistry.hasModel(modelId);
+  }
+
   // ============================================================================
   // API PRINCIPAL - DEPLOYMENT DE MODELOS
   // ============================================================================
@@ -177,8 +184,15 @@ export class PrismCRDT extends EventEmitter {
     const cachedEntry = this.cache.getCacheEntry(cacheKey);
 
     if (cachedEntry) {
-      const result = cachedEntry.value;
-      this.stats.recordRequest(true, performance.now() - startTime, true);
+      const latency = performance.now() - startTime;
+      const result: InferenceResult = {
+        ...cachedEntry.value,
+        id: request.id,
+        latency,
+        timestamp: Date.now(),
+        cached: true,
+      };
+      this.stats.recordRequest(true, latency, true);
       this.emit('inference:complete', result);
       return result;
     }
@@ -207,6 +221,7 @@ export class PrismCRDT extends EventEmitter {
         latency,
         edgeId,
         timestamp: Date.now(),
+        cached: false,
       };
 
       // Cache result (CRDT converge automáticamente)

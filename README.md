@@ -3,9 +3,30 @@
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-124%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-143%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
-> Distributed AI inference platform with CRDT-based synchronization, multi-model ensembles, and WebGPU acceleration. Built for reliable edge computing.
+> CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
+
+## Current Status
+
+PRISM is now buildable, type-checkable, and demoable as a TypeScript package.
+
+Implemented today:
+
+- CRDT-backed model registry, distributed cache, node registry, load balancing counters, offline queue, and inference stats.
+- `PrismCRDT` orchestration with deploy, merge, route, cache, stats, and serialization flows.
+- Multi-model ensemble strategies: voting, averaging, weighted, stacking, boosting, and fallback behavior.
+- Edge adapter surfaces for Vercel, Cloudflare Workers, Netlify Edge, and Deno Deploy with injectable inference handlers and cache backends.
+- SOLID inference runtime abstraction with batching, caching, quantization utilities, a safe simulated runtime by default, and optional real ONNX Runtime Web execution.
+- Model sharding manager with local/remote shard loading, ordered assembly, SHA-256 verification, and size checks.
+- WebGPU tensor primitives for matmul, GELU, and layer normalization.
+- Verified package outputs for root, `@frxncisxo/prism/edge`, and `@frxncisxo/prism/inference`.
+
+Experimental / roadmap:
+
+- TensorFlow Lite, GGUF, and safetensors loaders currently expose the adapter shape; ONNX has an optional real runtime through `onnxruntime-web`.
+- Edge adapters now validate, cache, and invoke injected inference handlers; production KV/provider-specific bindings still need concrete integrations.
+- Real LLM token streaming is still API/architecture work in progress.
 
 ## 🏗️ Clean Architecture
 
@@ -45,16 +66,16 @@ Modern AI applications need distributed inference that works reliably across edg
 
 ## What is PRISM?
 
-**PRISM** is a distributed AI inference platform that:
+**PRISM** is a CRDT-first edge AI orchestration toolkit that:
 
-1. **Runs LLMs at the edge** - Llama 3.1 8B, Qwen 2.5 (7B-9B models fit anywhere)
+1. **Coordinates models at the edge** - distributed model registry and routing metadata
 2. **Syncs automatically** - CRDT-based conflict resolution, eventual consistency
 3. **Works offline** - Queue requests, sync when reconnected
-4. **Multi-format support** - ONNX, TensorFlow Lite, GGLM (llama.cpp)
+4. **Prepares for multi-format inference** - ONNX, TensorFlow Lite, GGUF, and safetensors adapter surfaces
 5. **Edge-first deployment** - Vercel, Cloudflare, Netlify, Deno Deploy
-6. **Low latency** - V8 isolates, optimized for edge deployment
+6. **Low-latency hot paths** - in-memory cache, batching, and local routing
 7. **TypeScript-native** - Type-safe from edge to inference
-8. **🚀 Ultra-optimized** - Predictive caching, streaming, binary sync, adaptive batching
+8. **Optimized foundations** - predictive caching, streaming surfaces, binary sync, adaptive batching
 
 ### Advanced Optimizations (2026)
 
@@ -106,6 +127,18 @@ yarn add @frxncisxo/prism
 bun add @frxncisxo/prism
 ```
 
+## Run the Demo
+
+```bash
+npm install
+npm run demo
+npm run demo:onnx
+```
+
+The demo builds the package and runs a vertical slice: two edge nodes, model deployment, CRDT merge, routed inference, cache hit, and converged stats.
+
+`npm run demo:onnx` builds the package and executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
+
 ## Quick Start
 
 ### 1. Initialize PRISM Node
@@ -132,10 +165,10 @@ await prism.deployModel({
   id: 'llama-3.1-8b',
   name: 'Meta Llama 3.1 8B Instruct',
   version: '1.0.0',
+  format: 'gguf',
   size: 3_600_000_000, // 3.6 GB
+  capabilities: ['chat', 'summarization'],
   quantization: 'int4', // 4-bit quantization = 900 MB
-  maxTokens: 2048,
-  context: 8192,
 });
 ```
 
@@ -186,10 +219,75 @@ await prism.reconnect();
 
 ## Advanced Usage
 
+### Pluggable Inference Runtimes
+
+PRISM's inference engine depends on the `InferenceRuntime` interface, not on a concrete model backend. That keeps the orchestration layer open for ONNX Runtime Web, Transformers.js, Workers AI, OpenAI-compatible gateways, TensorFlow Lite, or GGUF adapters without changing cache, batching, stats, or model lifecycle code.
+
+```typescript
+import { InferenceEngine, type InferenceRuntime } from '@frxncisxo/prism/inference';
+
+const runtime: InferenceRuntime = {
+  id: 'my-runtime',
+  supports: (model) => model.format === 'onnx',
+  load: async (model) => ({ modelId: model.id, session: 'runtime-session' }),
+  infer: async (_model, session, input) => ({
+    text: `runtime ${session.modelId}: ${input.normalized}`,
+    source: 'custom',
+  }),
+};
+
+const engine = new InferenceEngine({ runtimes: [runtime] });
+```
+
+### ONNX Runtime Web (Optional Real Runtime)
+
+Install the optional runtime when you want PRISM to execute ONNX models directly:
+
+```bash
+npm install onnxruntime-web
+```
+
+```typescript
+import { InferenceEngine, OnnxRuntimeWebRuntime } from '@frxncisxo/prism/inference';
+
+const engine = new InferenceEngine({
+  runtimes: [
+    new OnnxRuntimeWebRuntime({
+      executionProviders: ['wasm'],
+      wasmPaths: '/ort-wasm/',
+    }),
+  ],
+});
+
+await engine.loadModel({
+  id: 'classifier',
+  name: 'Edge Classifier',
+  version: '1.0.0',
+  format: 'onnx',
+  size: 1_200_000,
+  capabilities: ['classification'],
+  metadata: {
+    modelUrl: '/models/classifier.onnx',
+    // Optional but recommended for local buffers/paths:
+    // sha256: '...',
+    // expectedSize: 1200000,
+  },
+});
+
+const result = await engine.infer('classifier', {
+  inputName: 'input_ids',
+  data: [1, 2, 3, 4],
+  dims: [1, 4],
+  type: 'float32',
+});
+```
+
+For local `modelPath`/`modelBuffer` sources, PRISM can verify `metadata.sha256` and `metadata.expectedSize` before creating the ONNX session. This is recommended for edge deployments where model artifacts may be cached, mirrored, or updated independently from application code.
+
 ### Batch Inference (Higher Throughput)
 
 ```typescript
-import { InferenceEngine } from '@frxncisxo/prism';
+import { InferenceEngine } from '@frxncisxo/prism/inference';
 
 const engine = new InferenceEngine({
   maxBatchSize: 32,
@@ -206,7 +304,7 @@ await engine.loadModel({
 });
 
 // Run 100 inferences at once
-const results = await engine.inferBatch('llama-3.1-8b', [
+const results = await engine.batchInfer('llama-3.1-8b', [
   'What is AI?',
   'Explain quantum computing',
   'What is blockchain?',
@@ -228,6 +326,18 @@ const adapter = new VercelEdgeAdapter({
   platform: 'vercel',
   region: 'us-east-1',
   cacheTtl: 3600, // Cache results for 1 hour
+}, {
+  infer: async (request, context) => ({
+    id: request.id,
+    modelId: request.modelId,
+    output: {
+      routedBy: context.edgeId,
+      input: request.input,
+    },
+    latency: 8,
+    edgeId: context.edgeId,
+    timestamp: Date.now(),
+  }),
 });
 
 export default async (request: Request) => {
@@ -317,6 +427,8 @@ prism.listModels().forEach(model => {
 });
 ```
 
+The adapter validates request shape, creates a SHA-256 cache key from model/input/options, serves repeated requests from an injected cache backend, and returns `cache-control: no-store` at the HTTP layer so prompts and model outputs are not stored by shared browser/CDN caches by accident.
+
 ## 🚀 Advanced Optimizations
 
 PRISM includes production-ready optimizations for maximum performance in 2026.
@@ -379,19 +491,29 @@ import { ModelShardManager } from '@frxncisxo/prism';
 
 const shardManager = new ModelShardManager();
 
-// Load 70B model across multiple nodes
-await shardManager.loadShardedModel('llama-70b', [
-  'https://cdn.prism.ai/shard-0.bin',
-  'https://cdn.prism.ai/shard-1.bin',
-  'https://cdn.prism.ai/shard-2.bin',
-  'https://cdn.prism.ai/shard-3.bin',
+// Load verified shards from CDN or local storage
+const manifest = await shardManager.loadShardedModel('llama-70b', [
+  {
+    index: 0,
+    url: 'https://cdn.prism.ai/llama-70b/shard-0.bin',
+    sha256: '...',
+    expectedSize: 1_073_741_824,
+  },
+  {
+    index: 1,
+    url: 'https://cdn.prism.ai/llama-70b/shard-1.bin',
+    sha256: '...',
+    expectedSize: 1_073_741_824,
+  },
 ]);
 
 // Access individual shards
 const shard = shardManager.getShard('llama-70b', 0);
+console.log(shard?.sha256);
 
-// Combine for single-GPU inference
+// Combine for runtimes that need a contiguous artifact
 const fullModel = await shardManager.combineShards('llama-70b');
+console.log(`Loaded ${manifest.shardCount} shards`);
 console.log(`Loaded ${(fullModel.byteLength / 1e9).toFixed(1)}GB model`);
 ```
 
@@ -600,6 +722,7 @@ All models fit on modern edge hardware after quantization.
 ### Format Support
 
 - ✅ ONNX (.onnx)
+- ✅ ONNX Runtime Web execution via optional peer dependency
 - ✅ TensorFlow Lite (.tflite)
 - ✅ GGLM / llama.cpp (.gguf)
 - ✅ JAX / PyTorch (with converters)
@@ -625,11 +748,12 @@ import {
   // Legacy compatibility (basic implementations)
   Prism,                   // Main orchestrator (basic structure)
   StreamingInference,      // Real-time streaming (basic implementation)
+  ModelShardManager,       // Verified local/remote model shard loading
   AdaptiveBatcher,         // Dynamic batching (basic implementation)
   ConnectionPool,          // Connection management (basic structure)
   CRDTSync,               // Conflict resolution (basic structure)
 
-  // Edge adapters (structure exists, not fully implemented)
+  // Edge adapters (pluggable inference/cache surface)
   VercelEdgeAdapter,
   CloudflareEdgeAdapter,
   NetlifyEdgeAdapter,
@@ -667,14 +791,16 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 124 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 143 unit tests covering all major functionality (100% pass rate)
+- [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
+- [x] **Pluggable edge adapters** - Shared validation, secure cache keys, injected inference handlers, and cache backend contracts
+- [x] **Verified model sharding** - Ordered shard loading, SHA-256 checks, expected-size checks, and contiguous assembly
 
 ### 🚧 **In Development**
 
 - [ ] **Streaming inference** - Real-time token streaming (basic structure exists, needs completion)
-- [ ] **Model sharding** - Load large models across multiple nodes (placeholder implementation)
 - [ ] **Adaptive batching** - Dynamic batch size optimization (basic implementation exists)
-- [ ] **Edge platform adapters** - Vercel, Cloudflare, Netlify, Deno support (structure exists, needs completion)
+- [ ] **Provider-native edge bindings** - Vercel KV, Cloudflare KV, Netlify Blobs, and Deno KV integration packages
 
 ### 📋 **Future Features**
 
@@ -699,7 +825,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **124 tests passing**:
+Tests are organized by Clean Architecture layers with **143 tests passing**:
 
 ```
 test/

@@ -43,7 +43,15 @@ export {
   CRDTSync,
   PredictiveCache,
   MemoryPool,
-  StreamingInference
+  StreamingInference,
+  ModelShardManager
+} from './index-legacy';
+
+export type {
+  ModelShard,
+  ModelShardInput,
+  ModelShardManagerDependencies,
+  ModelShardManifest
 } from './index-legacy';
 
 // ============================================================================

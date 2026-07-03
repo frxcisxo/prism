@@ -21,7 +21,7 @@
 - **Infraestructura**: Eliminación de servidores de coordinación central
 - **Debugging**: 80% menos tiempo en debugging de estados distribuidos
 - **Rollbacks**: 90% menos necesidad de rollbacks por inconsistencias
-
+ 
 #### 4. 🎯 Mejora de UX
 - **Tiempo de respuesta**: De 2-5 segundos a <200ms para operaciones locales
 - **Offline functionality**: 100% funcionalidad offline vs 60% actual

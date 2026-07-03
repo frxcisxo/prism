@@ -11,6 +11,11 @@ export interface WebGPUConfig {
   preferredAdapter?: 'high-performance' | 'low-power';
 }
 
+type GPURequestAdapterOptions = { powerPreference?: 'high-performance' | 'low-power' };
+type GPUFeatureName = string;
+type GPUBufferUsageFlags = number;
+type Float16Array = Uint16Array;
+
 export interface TensorBuffer {
   buffer: GPUBuffer;
   size: number;
@@ -85,7 +90,7 @@ export class WebGPUAccelerator {
         throw new Error('No suitable GPU adapter found');
       }
 
-      const limits = this.adapter.limits;
+      const limits = (this.adapter as any).limits;
       const deviceDescriptor: GPUDeviceDescriptor = {
         requiredFeatures: ['shader-f16'] as GPUFeatureName[],
         requiredLimits: {
@@ -100,9 +105,9 @@ export class WebGPUAccelerator {
       this.initialized = true;
 
       console.log('[PRISM] WebGPU initialized successfully', {
-        adapter: this.adapter.info?.device || 'Unknown GPU',
+        adapter: (this.adapter as any).info?.device || 'Unknown GPU',
         maxBufferSize: limits.maxBufferSize,
-        float16: this.device.features.has('shader-f16')
+        float16: (this.device as any).features?.has?.('shader-f16') || false
       });
 
     } catch (error) {
@@ -216,11 +221,11 @@ export class WebGPUAccelerator {
 
     // Write dimensions to uniform buffer
     const uniformData = new Uint32Array([M, N, K, batchSize]);
-    this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+    (this.queue as any).writeBuffer(uniformBuffer, 0, uniformData);
 
     // Create bind group
     const bindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
+      layout: (pipeline as any).getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: A.buffer } },
         { binding: 1, resource: { buffer: B.buffer } },
@@ -229,7 +234,7 @@ export class WebGPUAccelerator {
     });
 
     const uniformBindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(1),
+      layout: (pipeline as any).getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } }
       ]
@@ -237,7 +242,7 @@ export class WebGPUAccelerator {
 
     // Compute pass
     const commandEncoder = this.device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginComputePass();
+    const passEncoder = (commandEncoder as any).beginComputePass();
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
@@ -252,7 +257,7 @@ export class WebGPUAccelerator {
     passEncoder.end();
 
     // Submit commands
-    this.queue.submit([commandEncoder.finish()]);
+    this.queue?.submit([commandEncoder.finish()]);
 
     // Read result back to CPU for verification/testing
     const result = await this.readTensorBuffer(outputBuffer, [M, N, batchSize], 'float32');
@@ -327,11 +332,11 @@ export class WebGPUAccelerator {
     });
 
     const totalElements = input.shape.reduce((a, b) => a * b, 1);
-    this.device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([totalElements]));
+    (this.queue as any).writeBuffer(uniformBuffer, 0, new Uint32Array([totalElements]));
 
     // Create bind group
     const bindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
+      layout: (pipeline as any).getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: input.buffer } },
         { binding: 1, resource: { buffer: outputBuffer } }
@@ -339,7 +344,7 @@ export class WebGPUAccelerator {
     });
 
     const uniformBindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(1),
+      layout: (pipeline as any).getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } }
       ]
@@ -347,7 +352,7 @@ export class WebGPUAccelerator {
 
     // Compute pass
     const commandEncoder = this.device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginComputePass();
+    const passEncoder = (commandEncoder as any).beginComputePass();
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
@@ -457,11 +462,11 @@ export class WebGPUAccelerator {
     const hiddenSize = input.shape[1];
     const epsBits = new Uint32Array([eps])[0]; // Convert float to bits
 
-    this.device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([seqLen, hiddenSize, epsBits, 0]));
+    (this.queue as any).writeBuffer(uniformBuffer, 0, new Uint32Array([seqLen, hiddenSize, epsBits, 0]));
 
     // Create bind group
     const bindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
+      layout: (pipeline as any).getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: input.buffer } },
         { binding: 1, resource: { buffer: gamma.buffer } },
@@ -471,7 +476,7 @@ export class WebGPUAccelerator {
     });
 
     const uniformBindGroup = this.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(1),
+      layout: (pipeline as any).getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } }
       ]
@@ -479,7 +484,7 @@ export class WebGPUAccelerator {
 
     // Compute pass
     const commandEncoder = this.device.createCommandEncoder();
-    const passEncoder = commandEncoder.beginComputePass();
+    const passEncoder = (commandEncoder as any).beginComputePass();
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
@@ -510,7 +515,8 @@ export class WebGPUAccelerator {
    * Read tensor buffer back to CPU
    */
   private async readTensorBuffer(buffer: GPUBuffer, shape: number[], dtype: 'float32' | 'float16' | 'int32'): Promise<TensorBuffer> {
-    if (!this.device) throw new Error('WebGPU not initialized');
+    if (!this.device || !this.queue) throw new Error('WebGPU not initialized');
+    const queue = this.queue;
 
     const size = shape.reduce((a, b) => a * b, 1);
     const elementSize = dtype === 'float16' ? 2 : 4;
@@ -525,7 +531,7 @@ export class WebGPUAccelerator {
     // Copy from GPU buffer to staging buffer
     const commandEncoder = this.device.createCommandEncoder();
     commandEncoder.copyBufferToBuffer(buffer, 0, stagingBuffer, 0, totalSize);
-    this.queue.submit([commandEncoder.finish()]);
+    queue.submit([commandEncoder.finish()]);
 
     // Map and read
     await stagingBuffer.mapAsync(WEBGPU_MAP_MODE.READ);
@@ -568,9 +574,10 @@ export class WebGPUAccelerator {
    * Destroy GPU resources and clear profiling data
    */
   destroy(): void {
-    if (this.device && typeof this.device.destroy === 'function') {
+    const device = this.device as any;
+    if (device && typeof device.destroy === 'function') {
       try {
-        (this.device as any).destroy();
+        device.destroy();
       } catch (error) {
         console.warn('[PRISM] WebGPU destroy failed:', error);
       }
@@ -606,4 +613,3 @@ export class WebGPUAccelerator {
     this.profilingStats[name].totalTime += duration;
   }
 }
-

@@ -8,6 +8,7 @@ import {
   CRDTSync,
   PredictiveCache,
   MemoryPool,
+  ModelShardManager,
 } from '../../../src/index';
 import type { InferenceRequest, SyncEvent } from '../../../src/index';
 import { resolve } from 'path';
@@ -208,6 +209,74 @@ describe('Advanced PRISM Features', () => {
         expect(partial.id).toBe('stream-3');
         expect(partial.modelId).toBe('model-x');
       }
+    });
+  });
+
+  describe('ModelShardManager', () => {
+    let shardManager: ModelShardManager;
+
+    beforeEach(() => {
+      shardManager = new ModelShardManager();
+    });
+
+    it('should load, verify, and combine in-memory shards in order', async () => {
+      const first = new Uint8Array([1, 2, 3]);
+      const second = new Uint8Array([4, 5]);
+      const firstHash = await sha256(first);
+      const secondHash = await sha256(second);
+
+      const manifest = await shardManager.loadShardedModel('tiny-model', [
+        { index: 1, data: second, sha256: secondHash, expectedSize: 2 },
+        { index: 0, data: first, sha256: firstHash, expectedSize: 3 },
+      ]);
+      const combined = new Uint8Array(await shardManager.combineShards('tiny-model'));
+
+      expect(manifest).toEqual({
+        modelId: 'tiny-model',
+        shardCount: 2,
+        totalSize: 5,
+        sha256: await sha256(new Uint8Array([1, 2, 3, 4, 5])),
+        shards: [
+          expect.objectContaining({ index: 0, size: 3, sha256: firstHash, loaded: true }),
+          expect.objectContaining({ index: 1, size: 2, sha256: secondHash, loaded: true }),
+        ],
+      });
+      expect(Array.from(combined)).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it('should reject shards with SHA-256 mismatch', async () => {
+      await expect(shardManager.loadShardedModel('bad-model', [
+        { data: new Uint8Array([1, 2, 3]), sha256: '0'.repeat(64) },
+      ])).rejects.toThrow('SHA-256 mismatch');
+    });
+
+    it('should reject shards with size mismatch', async () => {
+      await expect(shardManager.loadShardedModel('bad-size', [
+        { data: new Uint8Array([1, 2, 3]), expectedSize: 99 },
+      ])).rejects.toThrow('size mismatch');
+    });
+
+    it('should reject missing shard indexes', async () => {
+      await expect(shardManager.loadShardedModel('missing-index', [
+        { index: 0, data: new Uint8Array([1]) },
+        { index: 2, data: new Uint8Array([2]) },
+      ])).rejects.toThrow('Missing shard index 1');
+    });
+
+    it('should load shard bytes through injected fetch', async () => {
+      const fetch = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        arrayBuffer: async () => new Uint8Array([9, 8, 7]).buffer,
+      } as Response));
+      const manager = new ModelShardManager({ fetch });
+
+      const manifest = await manager.loadShardedModel('remote-model', ['https://cdn.example/shard-0.bin']);
+      const combined = new Uint8Array(await manager.combineShards('remote-model'));
+
+      expect(fetch).toHaveBeenCalledWith('https://cdn.example/shard-0.bin');
+      expect(manifest.totalSize).toBe(3);
+      expect(Array.from(combined)).toEqual([9, 8, 7]);
     });
   });
 
@@ -667,3 +736,10 @@ describe('Advanced PRISM Features', () => {
     });
   });
 });
+
+async function sha256(data: Uint8Array): Promise<string> {
+  const hash = await globalThis.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+}

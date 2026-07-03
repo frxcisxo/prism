@@ -5,7 +5,15 @@
  */
 
 import { ORMap, LWWMap, PNCounter, ORSet, GCounter } from './types';
-import type { InferenceModel, InferenceRequest, CacheEntry } from '../../index';
+import type { InferenceModel, InferenceRequest, InferenceResult } from '../../index';
+
+export interface CacheEntry {
+  value: InferenceResult;
+  timestamp: number;
+  ttl: number;
+  accessCount: number;
+  size?: number;
+}
 
 // ============================================================================
 // COMPONENTES CRDT PARA PRISM
@@ -20,7 +28,7 @@ export class ModelRegistryCRDT extends ORMap<string, InferenceModel> {
     this.set(model.id, model, nodeId);
   }
 
-  undeployModel(modelId: string, nodeId: string): void {
+  undeployModel(modelId: string, _nodeId: string): void {
     this.delete(modelId);
   }
 

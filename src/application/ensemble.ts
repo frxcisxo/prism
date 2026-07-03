@@ -63,7 +63,7 @@ export class MultiModelEnsemble {
    * Create a new model ensemble
    */
   async createEnsemble(config: EnsembleConfig): Promise<EnsembleModel> {
-    // Validate that all models exist (skip isModelDeployed check)
+    // Validate that all models exist
     for (const modelId of config.modelIds) {
       if (!await this.prism.isModelDeployed(modelId)) {
         throw new Error(`Model ${modelId} is not deployed`);
@@ -96,7 +96,7 @@ export class MultiModelEnsemble {
   /**
    * Run inference using an ensemble
    */
-  async infer(ensembleId: string, input: any, options: { timeout?: number } = {}): Promise<EnsembleResult> {
+  async infer(ensembleId: string, input: any, _options?: { timeout?: number }): Promise<EnsembleResult> {
     const ensemble = this.ensembles.get(ensembleId);
     if (!ensemble) {
       throw new Error(`Ensemble ${ensembleId} not found`);
@@ -251,7 +251,7 @@ export class MultiModelEnsemble {
   /**
    * Averaging strategy: Average predictions across all models
    */
-  private applyAveragingStrategy(ensemble: EnsembleModel, results: EnsembleResult['individualResults']): { result: any; confidence: number } {
+  private applyAveragingStrategy(_ensemble: EnsembleModel, results: EnsembleResult['individualResults']): { result: any; confidence: number } {
     // For numerical outputs, average them
     if (typeof results[0].result === 'number') {
       const values = results.map(r => r.result as number);
@@ -364,7 +364,7 @@ export class MultiModelEnsemble {
   /**
    * Boosting strategy: Weight models based on their historical performance
    */
-  private applyBoostingStrategy(ensemble: EnsembleModel, results: EnsembleResult['individualResults']): { result: any; confidence: number } {
+  private applyBoostingStrategy(_ensemble: EnsembleModel, results: EnsembleResult['individualResults']): { result: any; confidence: number } {
     // Simplified boosting: weight by inverse of error rate
     // In production, this would use actual historical performance data
 

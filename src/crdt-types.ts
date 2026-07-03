@@ -165,8 +165,8 @@ export class ORSet<T> {
     return { elements };
   }
 
-  static fromJSON<T>(data: any): ORSet<T> {
-    const set = new ORSet<T>();
+  static fromJSON(data: any): any {
+    const set = new ORSet<any>();
     for (const [key, entry] of Object.entries(data.elements || {})) {
       const e = entry as any;
       set.elementMap.set(key, {
@@ -276,8 +276,8 @@ export class LWWMap<K, V> {
     return { entries };
   }
 
-  static fromJSON<K, V>(data: any): LWWMap<K, V> {
-    const map = new LWWMap<K, V>();
+  static fromJSON(data: any): any {
+    const map = new LWWMap<any, any>();
     for (const [key, entry] of Object.entries(data.entries || {})) {
       map.entryMap.set(key, entry as any);
     }
@@ -343,8 +343,8 @@ export class ORMap<K, V> {
     return { entries };
   }
 
-  static fromJSON<K, V>(data: any): ORMap<K, V> {
-    const map = new ORMap<K, V>();
+  static fromJSON(data: any): any {
+    const map = new ORMap<any, any>();
     for (const [key, setData] of Object.entries(data.entries || {})) {
       map.entries.set(key, ORSet.fromJSON(setData));
     }
