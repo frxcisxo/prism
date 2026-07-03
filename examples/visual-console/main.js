@@ -19,6 +19,11 @@ const els = {
   shardA: document.querySelector('#shardA'),
   shardB: document.querySelector('#shardB'),
   shardOutput: document.querySelector('#shardOutput'),
+  diagnosticStatus: document.querySelector('#diagnosticStatus'),
+  runtimeCount: document.querySelector('#runtimeCount'),
+  cacheEntries: document.querySelector('#cacheEntries'),
+  hitRate: document.querySelector('#hitRate'),
+  diagnosticOutput: document.querySelector('#diagnosticOutput'),
   timeline: document.querySelector('#timeline'),
   eventCount: document.querySelector('#eventCount'),
   runScenario: document.querySelector('#runScenario'),
@@ -43,6 +48,11 @@ function resetState() {
   els.shardA.classList.remove('verified');
   els.shardB.classList.remove('verified');
   els.shardOutput.textContent = 'Two verified byte shards will combine into one artifact.';
+  els.diagnosticStatus.textContent = 'Idle';
+  els.runtimeCount.textContent = '0';
+  els.cacheEntries.textContent = '0';
+  els.hitRate.textContent = '0%';
+  els.diagnosticOutput.textContent = 'Engine diagnostics will appear after the scenario runs.';
   renderEvents();
 }
 
@@ -85,7 +95,8 @@ function renderState(data) {
     els.cacheBadge.textContent = data.inference.cached ? 'Cache hit' : 'Cache miss';
     els.northLoad.style.width = data.inference.cached ? '24%' : '58%';
     els.southLoad.style.width = data.inference.cached ? '18%' : '32%';
-    els.inferenceOutput.textContent = `${data.inference.cached ? 'Served from distributed cache' : `Routed to ${data.inference.edgeId}`}. Latency: ${data.inference.latency.toFixed(2)}ms. Edge adapter: HTTP ${data.inference.edgeStatus}, ${data.inference.edgeCacheHeader}. Output: ${JSON.stringify(data.inference.output)}`;
+    const engineCache = data.inference.engine?.cached ? 'engine cache hit' : 'engine cache miss';
+    els.inferenceOutput.textContent = `${data.inference.cached ? 'Served from distributed cache' : `Routed to ${data.inference.edgeId}`}. Latency: ${data.inference.latency.toFixed(2)}ms. Edge adapter: HTTP ${data.inference.edgeStatus}, ${data.inference.edgeCacheHeader}. ${engineCache}. Output: ${JSON.stringify(data.inference.output)}`;
   }
 
   if (data.sharding) {
@@ -95,7 +106,27 @@ function renderState(data) {
     els.shardOutput.textContent = `${data.sharding.manifest.shardCount} shards · ${data.sharding.manifest.totalSize} bytes · combined artifact: ${data.sharding.artifact}`;
   }
 
+  renderDiagnostics(data.diagnostics);
+
   renderEvents();
+}
+
+function renderDiagnostics(diagnostics) {
+  if (!diagnostics) {
+    return;
+  }
+
+  const runtime = diagnostics.runtimes?.[0];
+  const model = diagnostics.models?.[0];
+  const hitRate = Math.round(diagnostics.cache?.hitRate || 0);
+
+  els.diagnosticStatus.textContent = diagnostics.status === 'ready' ? 'Ready' : 'Idle';
+  els.runtimeCount.textContent = String(diagnostics.runtimes?.length || 0);
+  els.cacheEntries.textContent = String(diagnostics.cache?.entries || 0);
+  els.hitRate.textContent = `${hitRate}%`;
+  els.diagnosticOutput.textContent = runtime && model
+    ? `${model.modelId} · ${runtime.runtime} · ${model.source} · ${diagnostics.stats.totalRequests} request${diagnostics.stats.totalRequests === 1 ? '' : 's'} · avg ${diagnostics.stats.averageLatency.toFixed(2)}ms`
+    : 'No runtime loaded.';
 }
 
 async function postJson(url, body = {}) {

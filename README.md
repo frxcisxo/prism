@@ -143,7 +143,7 @@ The demo builds the package and runs a vertical slice: two edge nodes, model dep
 
 `npm run demo:onnx` builds the package and executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
 
-`npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, and verified shard assembly.
+`npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, and verified shard assembly.
 
 ## Quick Start
 

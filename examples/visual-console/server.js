@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ModelShardManager, PrismCRDT } from '../../dist/index.js';
 import { VercelEdgeAdapter } from '../../dist/edge.js';
+import { InferenceEngine } from '../../dist/inference.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const port = Number(process.env.PORT || 5177);
@@ -25,7 +26,9 @@ function createState() {
   return {
     north: new PrismCRDT({ nodeId: 'north-edge' }),
     south: new PrismCRDT({ nodeId: 'south-edge' }),
+    engine: new InferenceEngine({ maxBatchSize: 4, quantization: 'int8' }),
     deployed: false,
+    engineLoaded: false,
     synced: false,
     events: [],
   };
@@ -47,6 +50,8 @@ async function runScenario(prompt) {
     appState.deployed = true;
     pushEvent('Deployed edge-planner-small on north-edge');
   }
+
+  await ensureInferenceEngine();
 
   if (!appState.synced) {
     appState.south.merge(appState.north);
@@ -87,13 +92,25 @@ async function ensureNetwork() {
   }
 }
 
+async function ensureInferenceEngine() {
+  if (appState.engineLoaded) {
+    return;
+  }
+
+  await appState.engine.loadModel(model);
+  appState.engineLoaded = true;
+  pushEvent('Loaded edge-planner-small into InferenceEngine');
+}
+
 async function infer(prompt, repeated) {
   const input = prompt || 'Plan a safe edge deployment for a retail store.';
+  await ensureInferenceEngine();
   const result = await appState.south.infer({
     id: repeated ? 'visual-repeat' : `visual-${Date.now()}`,
     modelId: model.id,
     input,
   });
+  const engineResult = await appState.engine.infer(model.id, input, { cache: true });
   const edge = new VercelEdgeAdapter({
     platform: 'vercel',
     region: 'visual-console',
@@ -122,6 +139,7 @@ async function infer(prompt, repeated) {
 
   return {
     ...result,
+    engine: engineResult,
     edgeStatus: edgeResponse.status,
     edgeCacheHeader: edgeResponse.headers.get('cache-control'),
   };
@@ -156,6 +174,7 @@ function snapshot() {
     synced: appState.synced,
     northStats,
     southStats,
+    diagnostics: appState.engine.getDiagnostics(),
     events: appState.events,
   };
 }
