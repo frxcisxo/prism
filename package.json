@@ -39,12 +39,12 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:performance": "vitest --run --reporter=verbose bench/",
-    "validate": "npm run build && node validate-readme.js",
-    "ci": "npm run type-check && npm test -- --run && npm run build && node validate-readme.js && npm audit --omit=dev && npm pack --dry-run",
+    "validate": "npm run build && node validate-readme.js && node validate-visual-console.js",
+    "ci": "npm run type-check && npm test -- --run && npm run build && node validate-readme.js && node validate-visual-console.js && npm audit --omit=dev && npm pack --dry-run",
     "lint": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "size-check": "npm run build && du -sh dist/",
-    "prepublishOnly": "npm run type-check && npm run build:optimized && npm test -- --run && node validate-readme.js"
+    "prepublishOnly": "npm run type-check && npm run build:optimized && npm test -- --run && node validate-readme.js && node validate-visual-console.js"
   },
   "keywords": [
     "edge-ai",
