@@ -1,6 +1,7 @@
 # 🔮 PRISM - Distributed Edge AI Inference
 
 [![npm version](https://img.shields.io/npm/v/@frxncisxo/prism.svg)](https://www.npmjs.com/package/@frxncisxo/prism)
+[![CI](https://github.com/frxcisxo/prism/actions/workflows/ci.yml/badge.svg)](https://github.com/frxcisxo/prism/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)](https://github.com/frxcisxo/prism)
