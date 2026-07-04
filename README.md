@@ -151,6 +151,8 @@ The demos run against PRISM's compiled package. In a local checkout, run `npm ru
 
 `npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, resilient runtime fallback health, alert summaries, a Prometheus metrics preview, and verified shard assembly.
 
+Release validation also packs PRISM, installs it into a clean temporary project, and runs `demo`, `demo:onnx`, and the visual console API from the installed package.
+
 ## Quick Start
 
 ### 1. Initialize PRISM Node
