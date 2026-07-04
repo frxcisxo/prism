@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { ModelShardManager, PrismCRDT } from '../../dist/index.js';
 import { VercelEdgeAdapter } from '../../dist/edge.js';
-import { InferenceEngine } from '../../dist/inference.js';
+import { InferenceEngine, ResilientInferenceRuntime, ResilientRuntimeMonitor } from '../../dist/inference.js';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const port = Number(process.env.PORT || 5177);
@@ -23,14 +23,68 @@ const model = {
 const appState = createState();
 
 function createState() {
+  const resilience = createResilienceBundle();
+
   return {
     north: new PrismCRDT({ nodeId: 'north-edge' }),
     south: new PrismCRDT({ nodeId: 'south-edge' }),
     engine: new InferenceEngine({ maxBatchSize: 4, quantization: 'int8' }),
+    resilience,
     deployed: false,
     engineLoaded: false,
+    resilienceLoaded: false,
     synced: false,
     events: [],
+  };
+}
+
+function createResilienceBundle() {
+  const monitor = new ResilientRuntimeMonitor({ maxEvents: 20 });
+  let primaryCalls = 0;
+  const resilientModel = {
+    id: 'visual-resilient-chat',
+    name: 'Visual Resilient Chat',
+    version: '1.0.0',
+    format: 'remote',
+    size: 1,
+    capabilities: ['chat', 'resilience'],
+  };
+  const primary = {
+    id: 'visual-primary-runtime',
+    supports: candidate => candidate.id === resilientModel.id,
+    load: async () => ({ runtime: 'visual-primary-runtime' }),
+    infer: async () => {
+      primaryCalls += 1;
+      throw new Error('visual primary runtime unavailable');
+    },
+  };
+  const fallback = {
+    id: 'visual-fallback-runtime',
+    supports: candidate => candidate.id === resilientModel.id,
+    load: async () => ({ runtime: 'visual-fallback-runtime' }),
+    infer: async (_model, _session, input) => ({
+      text: `fallback:${input.normalized}`,
+      source: 'remote',
+      runtime: 'visual-fallback-runtime',
+    }),
+  };
+  const runtime = new ResilientInferenceRuntime({
+    primary,
+    fallback,
+    maxRetries: 0,
+    timeoutMs: 100,
+    circuitBreaker: {
+      failureThreshold: 1,
+      recoveryMs: 30_000,
+    },
+    onEvent: monitor.handleEvent,
+  });
+
+  return {
+    model: resilientModel,
+    monitor,
+    engine: new InferenceEngine({ runtimes: [runtime] }),
+    getPrimaryCalls: () => primaryCalls,
   };
 }
 
@@ -52,6 +106,7 @@ async function runScenario(prompt) {
   }
 
   await ensureInferenceEngine();
+  await ensureResilienceEngine();
 
   if (!appState.synced) {
     appState.south.merge(appState.north);
@@ -60,11 +115,13 @@ async function runScenario(prompt) {
   }
 
   const inference = await infer(prompt, false);
+  const resilience = await exerciseResilience(prompt);
   const sharding = await verifySharding();
 
   return {
     ...snapshot(),
     inference,
+    resilience,
     sharding,
   };
 }
@@ -75,10 +132,12 @@ async function repeatInference(prompt) {
   }
 
   const inference = await infer(prompt, true);
+  const resilience = await exerciseResilience(prompt);
 
   return {
     ...snapshot(),
     inference,
+    resilience,
   };
 }
 
@@ -100,6 +159,16 @@ async function ensureInferenceEngine() {
   await appState.engine.loadModel(model);
   appState.engineLoaded = true;
   pushEvent('Loaded edge-planner-small into InferenceEngine');
+}
+
+async function ensureResilienceEngine() {
+  if (appState.resilienceLoaded) {
+    return;
+  }
+
+  await appState.resilience.engine.loadModel(appState.resilience.model);
+  appState.resilienceLoaded = true;
+  pushEvent('Loaded resilient runtime pair with fallback');
 }
 
 async function infer(prompt, repeated) {
@@ -145,6 +214,33 @@ async function infer(prompt, repeated) {
   };
 }
 
+async function exerciseResilience(prompt) {
+  await ensureResilienceEngine();
+  const input = prompt || 'Plan a safe edge deployment for a retail store.';
+  const first = await appState.resilience.engine.infer(appState.resilience.model.id, input, { cache: false });
+  const second = await appState.resilience.engine.infer(appState.resilience.model.id, `${input} Use fallback.`, { cache: false });
+  const alerts = appState.resilience.monitor.evaluateAlerts();
+  const alertStates = appState.resilience.monitor.updateAlertStates();
+  const summary = appState.resilience.monitor.getAlertSummary();
+  const health = appState.resilience.monitor.getHealthCheck();
+  const report = appState.resilience.monitor.toJSON();
+  const metrics = appState.resilience.monitor.toPrometheusMetrics();
+
+  pushEvent(`${health.status} resilient runtime: ${summary.active} active alert${summary.active === 1 ? '' : 's'}`);
+
+  return {
+    first,
+    second,
+    primaryCalls: appState.resilience.getPrimaryCalls(),
+    health,
+    report,
+    alerts,
+    alertStates,
+    summary,
+    metricsPreview: metrics.split('\n').slice(0, 8).join('\n'),
+  };
+}
+
 async function verifySharding() {
   const manager = new ModelShardManager();
   const first = new Uint8Array([80, 82, 73]);
@@ -175,6 +271,15 @@ function snapshot() {
     northStats,
     southStats,
     diagnostics: appState.engine.getDiagnostics(),
+    resilience: appState.resilienceLoaded
+      ? {
+        health: appState.resilience.monitor.getHealthCheck(),
+        report: appState.resilience.monitor.toJSON(),
+        alertStates: appState.resilience.monitor.getAlertStates(),
+        summary: appState.resilience.monitor.getAlertSummary(),
+        primaryCalls: appState.resilience.getPrimaryCalls(),
+      }
+      : null,
     events: appState.events,
   };
 }

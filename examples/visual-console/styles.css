@@ -115,7 +115,8 @@ button:hover {
   grid-row: span 2;
 }
 
-.diagnostics-panel {
+.diagnostics-panel,
+.resilience-panel {
   grid-column: 1 / -1;
 }
 
@@ -268,6 +269,19 @@ textarea {
 
 .result-box.compact {
   min-height: 54px;
+}
+
+.metrics-preview {
+  min-height: 132px;
+  margin: 12px 0 0;
+  border: 1px solid #d8e1ea;
+  border-radius: 8px;
+  padding: 12px;
+  background: #0d1723;
+  color: #d9f7ef;
+  font: 0.82rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  overflow: auto;
+  white-space: pre-wrap;
 }
 
 .shard-row {

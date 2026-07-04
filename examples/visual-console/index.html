@@ -105,6 +105,29 @@
           </div>
           <div class="result-box compact" id="diagnosticOutput">Engine diagnostics will appear after the scenario runs.</div>
         </article>
+
+        <article class="panel resilience-panel">
+          <div class="panel-head">
+            <h2>Resilient Runtime</h2>
+            <span id="resilienceStatus">Idle</span>
+          </div>
+          <div class="diagnostic-grid">
+            <div class="metric">
+              <span id="resilienceAlerts">0</span>
+              <small>active alerts</small>
+            </div>
+            <div class="metric">
+              <span id="resilienceFallbacks">0</span>
+              <small>fallback hits</small>
+            </div>
+            <div class="metric">
+              <span id="resiliencePrimaryCalls">0</span>
+              <small>primary calls</small>
+            </div>
+          </div>
+          <div class="result-box compact" id="resilienceOutput">Resilient runtime health will appear after the scenario runs.</div>
+          <pre class="metrics-preview" id="metricsPreview">Prometheus metrics preview will appear here.</pre>
+        </article>
       </section>
 
       <section class="timeline-panel" aria-label="Event timeline">

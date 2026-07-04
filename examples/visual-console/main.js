@@ -24,6 +24,12 @@ const els = {
   cacheEntries: document.querySelector('#cacheEntries'),
   hitRate: document.querySelector('#hitRate'),
   diagnosticOutput: document.querySelector('#diagnosticOutput'),
+  resilienceStatus: document.querySelector('#resilienceStatus'),
+  resilienceAlerts: document.querySelector('#resilienceAlerts'),
+  resilienceFallbacks: document.querySelector('#resilienceFallbacks'),
+  resiliencePrimaryCalls: document.querySelector('#resiliencePrimaryCalls'),
+  resilienceOutput: document.querySelector('#resilienceOutput'),
+  metricsPreview: document.querySelector('#metricsPreview'),
   timeline: document.querySelector('#timeline'),
   eventCount: document.querySelector('#eventCount'),
   runScenario: document.querySelector('#runScenario'),
@@ -53,6 +59,12 @@ function resetState() {
   els.cacheEntries.textContent = '0';
   els.hitRate.textContent = '0%';
   els.diagnosticOutput.textContent = 'Engine diagnostics will appear after the scenario runs.';
+  els.resilienceStatus.textContent = 'Idle';
+  els.resilienceAlerts.textContent = '0';
+  els.resilienceFallbacks.textContent = '0';
+  els.resiliencePrimaryCalls.textContent = '0';
+  els.resilienceOutput.textContent = 'Resilient runtime health will appear after the scenario runs.';
+  els.metricsPreview.textContent = 'Prometheus metrics preview will appear here.';
   renderEvents();
 }
 
@@ -107,6 +119,7 @@ function renderState(data) {
   }
 
   renderDiagnostics(data.diagnostics);
+  renderResilience(data.resilience);
 
   renderEvents();
 }
@@ -127,6 +140,39 @@ function renderDiagnostics(diagnostics) {
   els.diagnosticOutput.textContent = runtime && model
     ? `${model.modelId} · ${runtime.runtime} · ${model.source} · ${diagnostics.stats.totalRequests} request${diagnostics.stats.totalRequests === 1 ? '' : 's'} · avg ${diagnostics.stats.averageLatency.toFixed(2)}ms`
     : 'No runtime loaded.';
+}
+
+function renderResilience(resilience) {
+  if (!resilience) {
+    els.resilienceStatus.textContent = 'Idle';
+    els.resilienceAlerts.textContent = '0';
+    els.resilienceFallbacks.textContent = '0';
+    els.resiliencePrimaryCalls.textContent = '0';
+    els.resilienceOutput.textContent = 'Resilient runtime health will appear after the scenario runs.';
+    els.metricsPreview.textContent = 'Prometheus metrics preview will appear here.';
+    return;
+  }
+
+  const health = resilience.health || resilience.report || {};
+  const report = resilience.report || {};
+  const summary = resilience.summary || {};
+  const circuitBreaker = health.circuitBreaker || report.circuitBreaker || {};
+  const activeAlerts = summary.active
+    ?? resilience.alertStates?.filter(alert => alert.status === 'active').length
+    ?? 0;
+  const fallbackHits = report.totals?.fallbackSuccesses
+    ?? health.totals?.fallbackSuccesses
+    ?? report.fallbackSuccesses
+    ?? 0;
+  const activeAlert = resilience.alertStates?.find(alert => alert.status === 'active') || resilience.alerts?.[0];
+  const fallbackText = resilience.second?.text || resilience.second?.raw?.text || 'fallback completed';
+
+  els.resilienceStatus.textContent = `${health.status || report.status || 'unknown'} · HTTP ${health.statusCode || report.statusCode || 200}`;
+  els.resilienceAlerts.textContent = String(activeAlerts);
+  els.resilienceFallbacks.textContent = String(fallbackHits);
+  els.resiliencePrimaryCalls.textContent = String(resilience.primaryCalls || 0);
+  els.resilienceOutput.textContent = `${health.summary || 'Runtime evaluated'} · circuit ${circuitBreaker.state || 'closed'} · ${activeAlert ? activeAlert.message : 'No active alerts'} · output: ${fallbackText}`;
+  els.metricsPreview.textContent = resilience.metricsPreview || 'No metrics yet.';
 }
 
 async function postJson(url, body = {}) {
