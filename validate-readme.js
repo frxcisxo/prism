@@ -328,6 +328,8 @@ try {
     cache: false,
   });
   const resilientSnapshot = resilientMonitor.getSnapshot();
+  const resilientHealth = resilientMonitor.getHealthCheck();
+  const resilientReport = resilientMonitor.toJSON();
 
   if (
     failingPrimaryCalls !== 1
@@ -340,6 +342,10 @@ try {
     || resilientSnapshot.totals.circuitOpened !== 1
     || resilientSnapshot.totals.primarySkipped !== 1
     || resilientSnapshot.runtimes['validation-fallback-runtime']?.events !== 2
+    || resilientHealth.statusCode !== 206
+    || resilientHealth.ok !== false
+    || resilientReport.status !== 'degraded'
+    || resilientReport.recentEvents.length !== 5
   ) {
     throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }

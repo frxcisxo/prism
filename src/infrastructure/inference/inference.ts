@@ -174,6 +174,22 @@ export interface ResilientRuntimeMonitorSnapshot {
   recentEvents: ResilientRuntimeEvent[];
 }
 
+export interface ResilientRuntimeHealthCheck {
+  ok: boolean;
+  status: ResilientRuntimeMonitorSnapshot['health'];
+  statusCode: 200 | 206 | 503;
+  generatedAt: number;
+  summary: string;
+  totals: ResilientRuntimeMonitorSnapshot['totals'];
+  circuitBreaker?: ResilientCircuitBreakerStatus;
+}
+
+export interface ResilientRuntimeMonitorReport extends ResilientRuntimeHealthCheck {
+  models: ResilientRuntimeMonitorSnapshot['models'];
+  runtimes: ResilientRuntimeMonitorSnapshot['runtimes'];
+  recentEvents: ResilientRuntimeEvent[];
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -426,6 +442,30 @@ export class ResilientRuntimeMonitor {
     };
   }
 
+  getHealthCheck(): ResilientRuntimeHealthCheck {
+    const snapshot = this.getSnapshot();
+    const statusCode = this.statusCodeFor(snapshot.health);
+    return {
+      ok: snapshot.health === 'healthy' || snapshot.health === 'recovering',
+      status: snapshot.health,
+      statusCode,
+      generatedAt: snapshot.generatedAt,
+      summary: this.summaryFor(snapshot),
+      totals: snapshot.totals,
+      circuitBreaker: snapshot.circuitBreaker,
+    };
+  }
+
+  toJSON(): ResilientRuntimeMonitorReport {
+    const snapshot = this.getSnapshot();
+    return {
+      ...this.getHealthCheck(),
+      models: snapshot.models,
+      runtimes: snapshot.runtimes,
+      recentEvents: snapshot.recentEvents,
+    };
+  }
+
   private count(type: ResilientRuntimeEventType): number {
     return this.events.filter(event => event.type === type).length;
   }
@@ -445,6 +485,29 @@ export class ResilientRuntimeMonitor {
       return 'degraded';
     }
     return 'healthy';
+  }
+
+  private statusCodeFor(health: ResilientRuntimeMonitorSnapshot['health']): 200 | 206 | 503 {
+    if (health === 'healthy' || health === 'recovering') {
+      return 200;
+    }
+    if (health === 'degraded') {
+      return 206;
+    }
+    return 503;
+  }
+
+  private summaryFor(snapshot: ResilientRuntimeMonitorSnapshot): string {
+    if (snapshot.health === 'healthy') {
+      return 'Resilient inference runtime is healthy';
+    }
+    if (snapshot.health === 'recovering') {
+      return 'Primary runtime is probing recovery';
+    }
+    if (snapshot.health === 'degraded') {
+      return 'Primary runtime is degraded; fallback path is active';
+    }
+    return 'Resilient inference runtime is unavailable';
   }
 
   private groupBy(key: 'modelId' | 'runtime'): Record<string, ResilientRuntimeMonitorEntity> {

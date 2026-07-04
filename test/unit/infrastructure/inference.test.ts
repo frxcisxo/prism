@@ -946,6 +946,100 @@ describe('ResilientInferenceRuntime', () => {
       recentEvents: [],
     });
   });
+
+  it('should expose HTTP-friendly health checks and JSON reports', async () => {
+    let now = 1_000;
+    const monitor = new ResilientRuntimeMonitor({
+      maxEvents: 10,
+      now: () => now,
+    });
+
+    monitor.record({
+      type: 'primary-skipped',
+      modelId: 'resilient-model',
+      runtime: 'primary-runtime',
+      timestamp: now,
+      error: 'Primary runtime circuit is open',
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 1,
+        openedAt: now,
+        nextRetryAt: now + 1_000,
+      },
+    });
+    monitor.record({
+      type: 'fallback-success',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: now,
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 1,
+        openedAt: now,
+        nextRetryAt: now + 1_000,
+      },
+    });
+
+    expect(monitor.getHealthCheck()).toMatchObject({
+      ok: false,
+      status: 'degraded',
+      statusCode: 206,
+      generatedAt: now,
+      summary: 'Primary runtime is degraded; fallback path is active',
+      totals: {
+        events: 2,
+        fallbackSuccesses: 1,
+        primarySkipped: 1,
+      },
+      circuitBreaker: {
+        state: 'open',
+      },
+    });
+
+    const report = monitor.toJSON();
+    expect(report).toMatchObject({
+      status: 'degraded',
+      statusCode: 206,
+      models: {
+        'resilient-model': {
+          events: 2,
+          lastEventType: 'fallback-success',
+        },
+      },
+      runtimes: {
+        'fallback-runtime': {
+          events: 1,
+          lastEventType: 'fallback-success',
+        },
+      },
+    });
+    expect(report.recentEvents).toHaveLength(2);
+
+    now += 1;
+    monitor.record({
+      type: 'fallback-failure',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: now,
+      error: 'fallback unavailable',
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 1,
+      },
+    });
+
+    expect(monitor.getHealthCheck()).toMatchObject({
+      ok: false,
+      status: 'unavailable',
+      statusCode: 503,
+      summary: 'Resilient inference runtime is unavailable',
+    });
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {
