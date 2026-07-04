@@ -207,6 +207,18 @@ export interface ResilientRuntimeAlert {
   health: ResilientRuntimeMonitorSnapshot['health'];
 }
 
+export interface ResilientRuntimeAlertState {
+  id: string;
+  severity: ResilientRuntimeAlertSeverity;
+  message: string;
+  status: 'active' | 'resolved';
+  health: ResilientRuntimeMonitorSnapshot['health'];
+  activeSince: number;
+  lastSeenAt: number;
+  occurrences: number;
+  resolvedAt?: number;
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -413,6 +425,7 @@ export class SimulatedInferenceRuntime implements InferenceRuntime {
 
 export class ResilientRuntimeMonitor {
   private events: ResilientRuntimeEvent[] = [];
+  private alertStates = new Map<string, ResilientRuntimeAlertState>();
   private maxEvents: number;
   private now: () => number;
 
@@ -434,6 +447,7 @@ export class ResilientRuntimeMonitor {
 
   reset(): void {
     this.events = [];
+    this.alertStates.clear();
   }
 
   getSnapshot(): ResilientRuntimeMonitorSnapshot {
@@ -553,6 +567,43 @@ export class ResilientRuntimeMonitor {
         generatedAt: snapshot.generatedAt,
         health: snapshot.health,
       }));
+  }
+
+  updateAlertStates(rules: ResilientRuntimeAlertRule[] = this.defaultAlertRules()): ResilientRuntimeAlertState[] {
+    const alerts = this.evaluateAlerts(rules);
+    const activeIds = new Set(alerts.map(alert => alert.id));
+    const generatedAt = this.getSnapshot().generatedAt;
+
+    for (const alert of alerts) {
+      const existing = this.alertStates.get(alert.id);
+      this.alertStates.set(alert.id, {
+        id: alert.id,
+        severity: alert.severity,
+        message: alert.message,
+        status: 'active',
+        health: alert.health,
+        activeSince: existing?.status === 'active' ? existing.activeSince : alert.generatedAt,
+        lastSeenAt: alert.generatedAt,
+        occurrences: existing?.status === 'active' ? existing.occurrences + 1 : 1,
+      });
+    }
+
+    for (const [id, state] of this.alertStates.entries()) {
+      if (state.status === 'active' && !activeIds.has(id)) {
+        this.alertStates.set(id, {
+          ...state,
+          status: 'resolved',
+          lastSeenAt: generatedAt,
+          resolvedAt: generatedAt,
+        });
+      }
+    }
+
+    return this.getAlertStates();
+  }
+
+  getAlertStates(): ResilientRuntimeAlertState[] {
+    return [...this.alertStates.values()];
   }
 
   private count(type: ResilientRuntimeEventType): number {

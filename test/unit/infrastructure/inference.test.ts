@@ -1135,6 +1135,76 @@ describe('ResilientInferenceRuntime', () => {
       'resilient-runtime-circuit-open',
     ]);
   });
+
+  it('should track active and resolved alert states', () => {
+    let now = 1_000;
+    const monitor = new ResilientRuntimeMonitor({ now: () => now });
+
+    monitor.record({
+      type: 'fallback-success',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: now,
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 2,
+      },
+    });
+
+    expect(monitor.updateAlertStates()).toEqual([
+      {
+        id: 'resilient-runtime-circuit-open',
+        severity: 'warning',
+        message: 'Primary runtime circuit is open after 2 consecutive failure(s)',
+        status: 'active',
+        health: 'degraded',
+        activeSince: 1_000,
+        lastSeenAt: 1_000,
+        occurrences: 1,
+      },
+    ]);
+
+    now += 500;
+    expect(monitor.updateAlertStates()[0]).toMatchObject({
+      status: 'active',
+      activeSince: 1_000,
+      lastSeenAt: 1_500,
+      occurrences: 2,
+    });
+
+    now += 500;
+    monitor.record({
+      type: 'primary-success',
+      modelId: 'resilient-model',
+      runtime: 'primary-runtime',
+      timestamp: now,
+      fallbackUsed: false,
+      circuitBreaker: {
+        enabled: true,
+        state: 'closed',
+        consecutiveFailures: 0,
+      },
+    });
+
+    expect(monitor.updateAlertStates()).toEqual([
+      {
+        id: 'resilient-runtime-circuit-open',
+        severity: 'warning',
+        message: 'Primary runtime circuit is open after 2 consecutive failure(s)',
+        status: 'resolved',
+        health: 'degraded',
+        activeSince: 1_000,
+        lastSeenAt: 2_000,
+        occurrences: 2,
+        resolvedAt: 2_000,
+      },
+    ]);
+
+    monitor.reset();
+    expect(monitor.getAlertStates()).toEqual([]);
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {
