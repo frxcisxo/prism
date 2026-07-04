@@ -25,6 +25,10 @@
   },
   "files": [
     "dist",
+    "demo.js",
+    "demo-onnx.js",
+    "examples/visual-console",
+    "test/fixtures/onnx/add-one.onnx",
     "README.md",
     "LICENSE"
   ],
@@ -32,10 +36,10 @@
     "build": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap --clean",
     "build:optimized": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --minify --sourcemap --target es2022 --clean",
     "dev": "tsup src/index.ts src/edge.ts src/inference.ts --format cjs,esm --dts --watch",
-    "demo": "npm run build && node demo.js",
-    "demo:onnx": "npm run build && node demo-onnx.js",
-    "demo:all": "npm run build && node demo.js && node demo-onnx.js",
-    "example:visual": "npm run build && node examples/visual-console/server.js",
+    "demo": "node demo.js",
+    "demo:onnx": "node demo-onnx.js",
+    "demo:all": "node demo.js && node demo-onnx.js",
+    "example:visual": "node examples/visual-console/server.js",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:performance": "vitest --run --reporter=verbose bench/",
@@ -81,6 +85,7 @@
   "dependencies": {
     "libsodium-wrappers": "^0.7.13",
     "node-fetch": "^3.3.2",
+    "onnxruntime-web": "^1.27.0",
     "zod": "^3.22.0"
   },
   "peerDependencies": {

@@ -9,6 +9,7 @@
 
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { access } from 'node:fs/promises';
 
 const port = Number(process.env.PRISM_VISUAL_VALIDATE_PORT || 5191);
 const baseUrl = `http://127.0.0.1:${port}`;
@@ -105,6 +106,16 @@ function assertRepeat(data) {
 console.log('PRISM visual console validation\n');
 
 try {
+  await Promise.all([
+    access('demo.js'),
+    access('demo-onnx.js'),
+    access('examples/visual-console/server.js'),
+    access('examples/visual-console/index.html'),
+    access('examples/visual-console/main.js'),
+    access('examples/visual-console/styles.css'),
+    access('test/fixtures/onnx/add-one.onnx'),
+  ]);
+
   await waitForServer();
 
   const html = await fetch(baseUrl).then(response => response.text());
