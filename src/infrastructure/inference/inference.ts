@@ -219,6 +219,18 @@ export interface ResilientRuntimeAlertState {
   resolvedAt?: number;
 }
 
+export interface ResilientRuntimeAlertSummary {
+  generatedAt: number;
+  active: number;
+  resolved: number;
+  total: number;
+  highestSeverity?: ResilientRuntimeAlertSeverity;
+  activeBySeverity: Record<ResilientRuntimeAlertSeverity, number>;
+  resolvedBySeverity: Record<ResilientRuntimeAlertSeverity, number>;
+  lastActiveAt?: number;
+  lastResolvedAt?: number;
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -606,6 +618,24 @@ export class ResilientRuntimeMonitor {
     return [...this.alertStates.values()];
   }
 
+  getAlertSummary(): ResilientRuntimeAlertSummary {
+    const states = this.getAlertStates();
+    const activeStates = states.filter(state => state.status === 'active');
+    const resolvedStates = states.filter(state => state.status === 'resolved');
+
+    return {
+      generatedAt: this.now(),
+      active: activeStates.length,
+      resolved: resolvedStates.length,
+      total: states.length,
+      highestSeverity: this.highestSeverity(activeStates),
+      activeBySeverity: this.countStatesBySeverity(activeStates),
+      resolvedBySeverity: this.countStatesBySeverity(resolvedStates),
+      lastActiveAt: this.latest(activeStates.map(state => state.lastSeenAt)),
+      lastResolvedAt: this.latest(resolvedStates.map(state => state.resolvedAt).filter((value): value is number => value !== undefined)),
+    };
+  }
+
   private count(type: ResilientRuntimeEventType): number {
     return this.events.filter(event => event.type === type).length;
   }
@@ -675,6 +705,30 @@ export class ResilientRuntimeMonitor {
         message: 'Primary runtime is probing recovery',
       },
     ];
+  }
+
+  private countStatesBySeverity(states: ResilientRuntimeAlertState[]): Record<ResilientRuntimeAlertSeverity, number> {
+    return states.reduce<Record<ResilientRuntimeAlertSeverity, number>>((counts, state) => {
+      counts[state.severity] += 1;
+      return counts;
+    }, { info: 0, warning: 0, critical: 0 });
+  }
+
+  private highestSeverity(states: ResilientRuntimeAlertState[]): ResilientRuntimeAlertSeverity | undefined {
+    if (states.some(state => state.severity === 'critical')) {
+      return 'critical';
+    }
+    if (states.some(state => state.severity === 'warning')) {
+      return 'warning';
+    }
+    if (states.some(state => state.severity === 'info')) {
+      return 'info';
+    }
+    return undefined;
+  }
+
+  private latest(values: number[]): number | undefined {
+    return values.length > 0 ? Math.max(...values) : undefined;
   }
 
   private groupBy(key: 'modelId' | 'runtime'): Record<string, ResilientRuntimeMonitorEntity> {

@@ -333,6 +333,7 @@ try {
   const resilientMetrics = resilientMonitor.toPrometheusMetrics();
   const resilientAlerts = resilientMonitor.evaluateAlerts();
   const resilientAlertStates = resilientMonitor.updateAlertStates();
+  const resilientAlertSummary = resilientMonitor.getAlertSummary();
 
   if (
     failingPrimaryCalls !== 1
@@ -355,6 +356,8 @@ try {
     || resilientAlerts[0]?.severity !== 'warning'
     || resilientAlertStates[0]?.status !== 'active'
     || resilientAlertStates[0]?.occurrences !== 1
+    || resilientAlertSummary.active !== 1
+    || resilientAlertSummary.highestSeverity !== 'warning'
   ) {
     throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }

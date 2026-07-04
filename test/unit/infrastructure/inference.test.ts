@@ -1205,6 +1205,64 @@ describe('ResilientInferenceRuntime', () => {
     monitor.reset();
     expect(monitor.getAlertStates()).toEqual([]);
   });
+
+  it('should summarize active and resolved alert states', () => {
+    let now = 1_000;
+    const monitor = new ResilientRuntimeMonitor({ now: () => now });
+
+    monitor.record({
+      type: 'fallback-success',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: now,
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 1,
+      },
+    });
+    monitor.updateAlertStates();
+
+    expect(monitor.getAlertSummary()).toEqual({
+      generatedAt: 1_000,
+      active: 1,
+      resolved: 0,
+      total: 1,
+      highestSeverity: 'warning',
+      activeBySeverity: { info: 0, warning: 1, critical: 0 },
+      resolvedBySeverity: { info: 0, warning: 0, critical: 0 },
+      lastActiveAt: 1_000,
+      lastResolvedAt: undefined,
+    });
+
+    now += 1_000;
+    monitor.record({
+      type: 'primary-success',
+      modelId: 'resilient-model',
+      runtime: 'primary-runtime',
+      timestamp: now,
+      fallbackUsed: false,
+      circuitBreaker: {
+        enabled: true,
+        state: 'closed',
+        consecutiveFailures: 0,
+      },
+    });
+    monitor.updateAlertStates();
+
+    expect(monitor.getAlertSummary()).toEqual({
+      generatedAt: 2_000,
+      active: 0,
+      resolved: 1,
+      total: 1,
+      highestSeverity: undefined,
+      activeBySeverity: { info: 0, warning: 0, critical: 0 },
+      resolvedBySeverity: { info: 0, warning: 1, critical: 0 },
+      lastActiveAt: undefined,
+      lastResolvedAt: 2_000,
+    });
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {
