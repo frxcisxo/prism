@@ -466,6 +466,65 @@ export class ResilientRuntimeMonitor {
     };
   }
 
+  toPrometheusMetrics(prefix = 'prism_resilient_runtime'): string {
+    const snapshot = this.getSnapshot();
+    const health = this.getHealthCheck();
+    const lines: string[] = [
+      `# HELP ${prefix}_health_status Runtime health status as labeled gauges.`,
+      `# TYPE ${prefix}_health_status gauge`,
+      ...(['healthy', 'degraded', 'recovering', 'unavailable'] as const).map(status =>
+        `${prefix}_health_status{status="${status}"} ${snapshot.health === status ? 1 : 0}`
+      ),
+      `# HELP ${prefix}_health_ok Whether resilient inference is healthy enough to serve traffic.`,
+      `# TYPE ${prefix}_health_ok gauge`,
+      `${prefix}_health_ok ${health.ok ? 1 : 0}`,
+      `# HELP ${prefix}_events_total Total events retained in the monitor window.`,
+      `# TYPE ${prefix}_events_total counter`,
+      `${prefix}_events_total ${snapshot.totals.events}`,
+      `# HELP ${prefix}_retries_total Total retry events retained in the monitor window.`,
+      `# TYPE ${prefix}_retries_total counter`,
+      `${prefix}_retries_total ${snapshot.totals.retries}`,
+      `# HELP ${prefix}_primary_failures_total Total primary runtime failures retained in the monitor window.`,
+      `# TYPE ${prefix}_primary_failures_total counter`,
+      `${prefix}_primary_failures_total ${snapshot.totals.primaryFailures}`,
+      `# HELP ${prefix}_fallback_successes_total Total fallback successes retained in the monitor window.`,
+      `# TYPE ${prefix}_fallback_successes_total counter`,
+      `${prefix}_fallback_successes_total ${snapshot.totals.fallbackSuccesses}`,
+      `# HELP ${prefix}_fallback_failures_total Total fallback failures retained in the monitor window.`,
+      `# TYPE ${prefix}_fallback_failures_total counter`,
+      `${prefix}_fallback_failures_total ${snapshot.totals.fallbackFailures}`,
+      `# HELP ${prefix}_circuit_opened_total Total circuit-open events retained in the monitor window.`,
+      `# TYPE ${prefix}_circuit_opened_total counter`,
+      `${prefix}_circuit_opened_total ${snapshot.totals.circuitOpened}`,
+      `# HELP ${prefix}_primary_skipped_total Total primary-skipped events retained in the monitor window.`,
+      `# TYPE ${prefix}_primary_skipped_total counter`,
+      `${prefix}_primary_skipped_total ${snapshot.totals.primarySkipped}`,
+    ];
+
+    if (snapshot.circuitBreaker) {
+      lines.push(
+        `# HELP ${prefix}_circuit_breaker_state Circuit breaker state as labeled gauges.`,
+        `# TYPE ${prefix}_circuit_breaker_state gauge`,
+        ...(['closed', 'open', 'half-open'] as const).map(state =>
+          `${prefix}_circuit_breaker_state{state="${state}"} ${snapshot.circuitBreaker?.state === state ? 1 : 0}`
+        ),
+        `# HELP ${prefix}_circuit_breaker_consecutive_failures Current consecutive primary runtime failures.`,
+        `# TYPE ${prefix}_circuit_breaker_consecutive_failures gauge`,
+        `${prefix}_circuit_breaker_consecutive_failures ${snapshot.circuitBreaker.consecutiveFailures}`
+      );
+    }
+
+    for (const [modelId, entity] of Object.entries(snapshot.models)) {
+      lines.push(`${prefix}_model_events_total{model_id="${this.escapeLabel(modelId)}"} ${entity.events}`);
+    }
+
+    for (const [runtime, entity] of Object.entries(snapshot.runtimes)) {
+      lines.push(`${prefix}_runtime_events_total{runtime="${this.escapeLabel(runtime)}"} ${entity.events}`);
+    }
+
+    return `${lines.join('\n')}\n`;
+  }
+
   private count(type: ResilientRuntimeEventType): number {
     return this.events.filter(event => event.type === type).length;
   }
@@ -508,6 +567,10 @@ export class ResilientRuntimeMonitor {
       return 'Primary runtime is degraded; fallback path is active';
     }
     return 'Resilient inference runtime is unavailable';
+  }
+
+  private escapeLabel(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   }
 
   private groupBy(key: 'modelId' | 'runtime'): Record<string, ResilientRuntimeMonitorEntity> {

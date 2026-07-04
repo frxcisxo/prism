@@ -1040,6 +1040,36 @@ describe('ResilientInferenceRuntime', () => {
       summary: 'Resilient inference runtime is unavailable',
     });
   });
+
+  it('should export Prometheus metrics for resilient runtime health', () => {
+    const monitor = new ResilientRuntimeMonitor();
+
+    monitor.record({
+      type: 'fallback-success',
+      modelId: 'model"with\nlabel',
+      runtime: 'fallback\\runtime',
+      timestamp: 1_000,
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 2,
+      },
+    });
+
+    const metrics = monitor.toPrometheusMetrics();
+
+    expect(metrics).toContain('# HELP prism_resilient_runtime_health_status Runtime health status as labeled gauges.');
+    expect(metrics).toContain('prism_resilient_runtime_health_status{status="degraded"} 1');
+    expect(metrics).toContain('prism_resilient_runtime_health_ok 0');
+    expect(metrics).toContain('prism_resilient_runtime_events_total 1');
+    expect(metrics).toContain('prism_resilient_runtime_fallback_successes_total 1');
+    expect(metrics).toContain('prism_resilient_runtime_circuit_breaker_state{state="open"} 1');
+    expect(metrics).toContain('prism_resilient_runtime_circuit_breaker_consecutive_failures 2');
+    expect(metrics).toContain('prism_resilient_runtime_model_events_total{model_id="model\\"with\\nlabel"} 1');
+    expect(metrics).toContain('prism_resilient_runtime_runtime_events_total{runtime="fallback\\\\runtime"} 1');
+    expect(monitor.toPrometheusMetrics('custom_prism')).toContain('custom_prism_health_ok 0');
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {
