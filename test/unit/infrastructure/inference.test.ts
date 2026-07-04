@@ -1070,6 +1070,71 @@ describe('ResilientInferenceRuntime', () => {
     expect(metrics).toContain('prism_resilient_runtime_runtime_events_total{runtime="fallback\\\\runtime"} 1');
     expect(monitor.toPrometheusMetrics('custom_prism')).toContain('custom_prism_health_ok 0');
   });
+
+  it('should evaluate default and custom resilient runtime alerts', () => {
+    const monitor = new ResilientRuntimeMonitor({ now: () => 1_000 });
+
+    monitor.record({
+      type: 'fallback-success',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: 1_000,
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 2,
+      },
+    });
+
+    expect(monitor.evaluateAlerts()).toEqual([
+      {
+        id: 'resilient-runtime-circuit-open',
+        severity: 'warning',
+        message: 'Primary runtime circuit is open after 2 consecutive failure(s)',
+        generatedAt: 1_000,
+        health: 'degraded',
+      },
+    ]);
+
+    const customAlerts = monitor.evaluateAlerts([
+      {
+        id: 'fallback-active',
+        severity: 'info',
+        when: snapshot => snapshot.totals.fallbackSuccesses > 0,
+        message: snapshot => `Fallback served ${snapshot.totals.fallbackSuccesses} request(s)`,
+      },
+    ]);
+
+    expect(customAlerts).toEqual([
+      {
+        id: 'fallback-active',
+        severity: 'info',
+        message: 'Fallback served 1 request(s)',
+        generatedAt: 1_000,
+        health: 'degraded',
+      },
+    ]);
+
+    monitor.record({
+      type: 'fallback-failure',
+      modelId: 'resilient-model',
+      runtime: 'fallback-runtime',
+      timestamp: 1_001,
+      error: 'fallback unavailable',
+      fallbackUsed: true,
+      circuitBreaker: {
+        enabled: true,
+        state: 'open',
+        consecutiveFailures: 2,
+      },
+    });
+
+    expect(monitor.evaluateAlerts().map(alert => alert.id)).toEqual([
+      'resilient-runtime-unavailable',
+      'resilient-runtime-circuit-open',
+    ]);
+  });
 });
 
 describe('OnnxRuntimeWebRuntime', () => {

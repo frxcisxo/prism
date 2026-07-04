@@ -331,6 +331,7 @@ try {
   const resilientHealth = resilientMonitor.getHealthCheck();
   const resilientReport = resilientMonitor.toJSON();
   const resilientMetrics = resilientMonitor.toPrometheusMetrics();
+  const resilientAlerts = resilientMonitor.evaluateAlerts();
 
   if (
     failingPrimaryCalls !== 1
@@ -349,6 +350,8 @@ try {
     || resilientReport.recentEvents.length !== 5
     || !resilientMetrics.includes('prism_resilient_runtime_health_status{status="degraded"} 1')
     || !resilientMetrics.includes('prism_resilient_runtime_runtime_events_total{runtime="validation-fallback-runtime"} 2')
+    || resilientAlerts[0]?.id !== 'resilient-runtime-circuit-open'
+    || resilientAlerts[0]?.severity !== 'warning'
   ) {
     throw new Error('Resilient runtime circuit breaker smoke check returned unexpected output');
   }

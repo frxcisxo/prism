@@ -190,6 +190,23 @@ export interface ResilientRuntimeMonitorReport extends ResilientRuntimeHealthChe
   recentEvents: ResilientRuntimeEvent[];
 }
 
+export type ResilientRuntimeAlertSeverity = 'info' | 'warning' | 'critical';
+
+export interface ResilientRuntimeAlertRule {
+  id: string;
+  severity: ResilientRuntimeAlertSeverity;
+  when: (snapshot: ResilientRuntimeMonitorSnapshot) => boolean;
+  message: string | ((snapshot: ResilientRuntimeMonitorSnapshot) => string);
+}
+
+export interface ResilientRuntimeAlert {
+  id: string;
+  severity: ResilientRuntimeAlertSeverity;
+  message: string;
+  generatedAt: number;
+  health: ResilientRuntimeMonitorSnapshot['health'];
+}
+
 export interface ResilientInferenceRuntimeConfig {
   primary: InferenceRuntime;
   fallback?: InferenceRuntime;
@@ -525,6 +542,19 @@ export class ResilientRuntimeMonitor {
     return `${lines.join('\n')}\n`;
   }
 
+  evaluateAlerts(rules: ResilientRuntimeAlertRule[] = this.defaultAlertRules()): ResilientRuntimeAlert[] {
+    const snapshot = this.getSnapshot();
+    return rules
+      .filter(rule => rule.when(snapshot))
+      .map(rule => ({
+        id: rule.id,
+        severity: rule.severity,
+        message: typeof rule.message === 'function' ? rule.message(snapshot) : rule.message,
+        generatedAt: snapshot.generatedAt,
+        health: snapshot.health,
+      }));
+  }
+
   private count(type: ResilientRuntimeEventType): number {
     return this.events.filter(event => event.type === type).length;
   }
@@ -571,6 +601,29 @@ export class ResilientRuntimeMonitor {
 
   private escapeLabel(value: string): string {
     return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+  }
+
+  private defaultAlertRules(): ResilientRuntimeAlertRule[] {
+    return [
+      {
+        id: 'resilient-runtime-unavailable',
+        severity: 'critical',
+        when: snapshot => snapshot.health === 'unavailable',
+        message: 'Resilient runtime is unavailable; primary and fallback paths need attention',
+      },
+      {
+        id: 'resilient-runtime-circuit-open',
+        severity: 'warning',
+        when: snapshot => snapshot.circuitBreaker?.state === 'open',
+        message: snapshot => `Primary runtime circuit is open after ${snapshot.circuitBreaker?.consecutiveFailures ?? 0} consecutive failure(s)`,
+      },
+      {
+        id: 'resilient-runtime-recovering',
+        severity: 'info',
+        when: snapshot => snapshot.health === 'recovering',
+        message: 'Primary runtime is probing recovery',
+      },
+    ];
   }
 
   private groupBy(key: 'modelId' | 'runtime'): Record<string, ResilientRuntimeMonitorEntity> {
