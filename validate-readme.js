@@ -26,7 +26,7 @@ import {
   ResilientInferenceRuntime,
   ResilientRuntimeMonitor,
 } from './dist/inference.js';
-import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, VercelEdgeAdapter } from './dist/edge.js';
+import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, PrismEdgeGateway, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
 const addOneSha256 = 'b7d06325e6a907bdad72053370bc5d3501f599c89eb7e0c9577e556527e83eef';
@@ -538,7 +538,57 @@ try {
     throw new Error('Cloudflare KV cache adapter did not persist with expirationTtl');
   }
 
-  console.log('OK edge adapters infer/cache/security headers');
+  const gateway = new PrismEdgeGateway({
+    nodeId: 'validation-gateway',
+    platform: 'cloudflare',
+    region: 'validation',
+    edgeId: 'cloudflare-validation',
+    cacheTtl: 60,
+    model: {
+      ...model,
+      id: 'validation-gateway-model',
+      format: 'remote',
+      size: 1,
+    },
+    enrichOutput: (result, _request, context) => ({
+      ...result,
+      output: {
+        ...result.output,
+        region: context.region,
+      },
+    }),
+  });
+  const health = await gateway.health();
+  const firstGatewayResponse = await gateway.handleInferenceRequest(new Request('https://prism.local/infer', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: 'gateway-validation-1',
+      modelId: 'validation-gateway-model',
+      input: 'Validate PrismEdgeGateway.',
+    }),
+  }));
+  const repeatGatewayResponse = await gateway.handleInferenceRequest(new Request('https://prism.local/infer', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: 'gateway-validation-2',
+      modelId: 'validation-gateway-model',
+      input: 'Validate PrismEdgeGateway.',
+    }),
+  }));
+  const firstGatewayBody = await firstGatewayResponse.json();
+  const repeatGatewayBody = await repeatGatewayResponse.json();
+
+  if (
+    !health.ok
+    || health.stats.models !== 1
+    || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
+    || firstGatewayBody.data.output.region !== 'validation'
+    || repeatGatewayBody.cached !== true
+  ) {
+    throw new Error('PrismEdgeGateway smoke check returned unexpected output');
+  }
+
+  console.log('OK edge adapters and PrismEdgeGateway infer/cache/security headers');
 } catch (error) {
   fail('edge adapters', error);
 }

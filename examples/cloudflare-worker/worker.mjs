@@ -1,8 +1,7 @@
-import { PrismCRDT } from '../../dist/index.js';
 import {
-  CloudflareEdgeAdapter,
   CloudflareKVEdgeCache,
   MemoryEdgeCache,
+  PrismEdgeGateway,
 } from '../../dist/edge.js';
 
 const model = {
@@ -15,31 +14,8 @@ const model = {
   quantization: 'int8',
 };
 
-const prism = new PrismCRDT({ nodeId: 'cloudflare-prism-edge' });
 const localCache = new MemoryEdgeCache();
-
-let ready = false;
-let readyPromise;
-
-async function ensurePrismNetwork() {
-  if (ready) {
-    return;
-  }
-
-  if (!readyPromise) {
-    readyPromise = (async () => {
-      await prism.registerNode({ gpu: false, wasm: true, quantization: true });
-
-      if (!(await prism.isModelDeployed(model.id))) {
-        await prism.deployModel(model);
-      }
-
-      ready = true;
-    })();
-  }
-
-  await readyPromise;
-}
+const gateways = new Map();
 
 function createCache(env = {}) {
   return env.PRISM_CACHE
@@ -49,23 +25,28 @@ function createCache(env = {}) {
 
 function createAdapter(request, env = {}) {
   const colo = request.cf?.colo || env.PRISM_REGION || 'local-dev';
+  const key = `${colo}:${env.PRISM_CACHE ? 'kv' : 'memory'}:${env.PRISM_CACHE_TTL || 120}`;
 
-  return new CloudflareEdgeAdapter({
+  if (gateways.has(key)) {
+    return gateways.get(key);
+  }
+
+  const gateway = new PrismEdgeGateway({
+    nodeId: 'cloudflare-prism-edge',
+    serviceName: 'prism-cloudflare-worker',
     platform: 'cloudflare',
     region: colo,
     edgeId: `cloudflare-${String(colo).toLowerCase()}`,
     cacheTtl: Number(env.PRISM_CACHE_TTL || 120),
-  }, {
+    model,
     cache: createCache(env),
-    infer: async (inferenceRequest, context) => {
-      await ensurePrismNetwork();
-
-      const result = await prism.infer({
-        ...inferenceRequest,
-        edgeId: context.edgeId,
-      });
-
-      return {
+    edgeConfig: {
+      platform: 'cloudflare',
+      region: colo,
+      edgeId: `cloudflare-${String(colo).toLowerCase()}`,
+      cacheTtl: Number(env.PRISM_CACHE_TTL || 120),
+    },
+    enrichOutput: (result, _inferenceRequest, context) => ({
         ...result,
         output: {
           ...result.output,
@@ -75,9 +56,11 @@ function createAdapter(request, env = {}) {
             cacheKey: context.cacheKey,
           },
         },
-      };
-    },
+      }),
   });
+
+  gateways.set(key, gateway);
+  return gateway;
 }
 
 function json(body, status = 200) {
@@ -112,19 +95,8 @@ function withCors(response) {
   });
 }
 
-async function health() {
-  await ensurePrismNetwork();
-
-  return {
-    ok: true,
-    service: 'prism-cloudflare-worker',
-    model,
-    stats: prism.getStats(),
-    endpoints: {
-      infer: 'POST /infer',
-      health: 'GET /health',
-    },
-  };
+async function health(request, env) {
+  return createAdapter(request, env).health();
 }
 
 export default {
@@ -136,11 +108,11 @@ export default {
     }
 
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
-      return json(await health());
+      return json(await health(request, env));
     }
 
     if (request.method === 'POST' && url.pathname === '/infer') {
-      return withCors(await createAdapter(request, env).handleRequest(request));
+      return withCors(await createAdapter(request, env).handleInferenceRequest(request));
     }
 
     return json({

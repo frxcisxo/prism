@@ -153,7 +153,7 @@ The demos run against PRISM's compiled package. In a local checkout, run `npm ru
 
 `npm run demo:onnx` executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
 
-`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node, deploys `edge-triage-small`, handles `POST /infer` through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, and rejects invalid requests with safe validation errors.
+`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node through `PrismEdgeGateway`, deploys `edge-triage-small`, handles `POST /infer` through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, and rejects invalid requests with safe validation errors.
 
 `npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI includes retail, industrial, clinic, and logistics presets, then calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, resilient runtime fallback health, alert summaries, a Prometheus metrics preview, and verified shard assembly.
 
@@ -161,7 +161,7 @@ Release validation also packs PRISM, installs it into a clean temporary project,
 
 ### Cloudflare Worker Example
 
-The Worker example is a deployment-oriented slice for regional triage, routing, and cacheable inference. It is useful when a product needs to classify or route requests close to users while preserving PRISM's model registry, edge response envelope, and cache behavior.
+The Worker example is a deployment-oriented slice for regional triage, routing, and cacheable inference. It uses `PrismEdgeGateway` so lifecycle, model registration, health, adapter selection, and cache behavior are reusable instead of being hard-coded inside the Worker.
 
 ```bash
 npm run build
@@ -182,6 +182,46 @@ Example request body:
   "input": "Prioritize an urgent store shelf anomaly at the edge.",
   "options": { "priority": "high" }
 }
+```
+
+### PrismEdgeGateway
+
+Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, and share an edge cache across requests.
+
+```typescript
+import { PrismEdgeGateway } from '@frxncisxo/prism/edge';
+
+const gateway = new PrismEdgeGateway({
+  nodeId: 'iad-worker-1',
+  platform: 'cloudflare',
+  region: 'iad',
+  edgeId: 'cloudflare-iad',
+  cacheTtl: 120,
+  model: {
+    id: 'edge-triage-small',
+    name: 'Edge Triage Small',
+    version: '1.0.0',
+    format: 'remote',
+    size: 1,
+    capabilities: ['classification', 'routing'],
+  },
+});
+
+export default {
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/health') {
+      return Response.json(await gateway.health());
+    }
+
+    if (request.method === 'POST' && url.pathname === '/infer') {
+      return gateway.handleInferenceRequest(request);
+    }
+
+    return new Response('Not found', { status: 404 });
+  },
+};
 ```
 
 ## Quick Start

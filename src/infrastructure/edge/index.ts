@@ -5,3 +5,4 @@
  */
 
 export * from './edge';
+export * from './gateway';

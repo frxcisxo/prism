@@ -13,6 +13,7 @@ import {
   EdgeConfig,
   EdgeInferenceHandler,
 } from '../../../src/infrastructure/edge/edge';
+import { PrismEdgeGateway } from '../../../src/infrastructure/edge/gateway';
 
 describe('Edge Adapters', () => {
   const mockRequest = {
@@ -274,6 +275,105 @@ describe('Edge Adapters', () => {
         expiresAt: now + 5000,
       });
       vi.restoreAllMocks();
+    });
+  });
+
+  describe('PrismEdgeGateway', () => {
+    const model = {
+      id: 'gateway-model',
+      name: 'Gateway Model',
+      version: '1.0.0',
+      format: 'remote' as const,
+      size: 1,
+      capabilities: ['triage'],
+    };
+
+    function inferenceRequest(id: string, input: string) {
+      return new Request('https://edge.test/infer', {
+        method: 'POST',
+        body: JSON.stringify({ id, modelId: model.id, input }),
+      });
+    }
+
+    it('should initialize PRISM and expose a health contract', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'gateway-node',
+        platform: 'cloudflare',
+        region: 'iad',
+        model,
+      });
+
+      const health = await gateway.health();
+
+      expect(health.ok).toBe(true);
+      expect(health.initialized).toBe(true);
+      expect(health.platform).toBe('cloudflare');
+      expect(health.model.id).toBe(model.id);
+      expect(health.stats.models).toBe(1);
+      expect(health.stats.nodes).toBe(1);
+      expect(health.endpoints).toEqual({
+        infer: 'POST /infer',
+        health: 'GET /health',
+      });
+    });
+
+    it('should route inference through PRISM and the selected edge adapter', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'cloudflare-iad',
+        region: 'iad',
+        cacheTtl: 60,
+        model,
+        enrichOutput: (result, _request, context) => ({
+          ...result,
+          output: {
+            ...result.output,
+            region: context.region,
+            cacheKey: context.cacheKey,
+          },
+        }),
+      });
+
+      const first = await gateway.handleInferenceRequest(inferenceRequest('req-1', 'Classify shelf alert.'));
+      const repeat = await gateway.handleInferenceRequest(inferenceRequest('req-2', 'Classify shelf alert.'));
+      const firstJson = await first.json();
+      const repeatJson = await repeat.json();
+
+      expect(first.status).toBe(200);
+      expect(firstJson.success).toBe(true);
+      expect(firstJson.cached).toBe(false);
+      expect(firstJson.data.edgeId).toBe('cloudflare-iad');
+      expect(firstJson.data.output.region).toBe('iad');
+      expect(firstJson.data.output.cacheKey).toMatch(/^prism:gateway-model:/);
+      expect(repeatJson.cached).toBe(true);
+      expect(repeatJson.data.cached).toBe(true);
+    });
+
+    it('should resolve dynamic edge config from each request', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'dynamic-gateway-node',
+        platform: 'cloudflare',
+        model,
+        edgeConfig: request => {
+          const region = request.headers.get('cf-colo') ?? 'unknown';
+
+          return {
+            platform: 'cloudflare',
+            region,
+            edgeId: `cloudflare-${region}`,
+            cacheTtl: 60,
+          };
+        },
+      });
+      const response = await gateway.handleInferenceRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-colo': 'dfw' },
+        body: JSON.stringify({ id: 'dynamic-1', modelId: model.id, input: 'Route dynamically.' }),
+      }));
+      const body = await response.json();
+
+      expect(body.data.edgeId).toBe('cloudflare-dfw');
     });
   });
 });
