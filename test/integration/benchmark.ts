@@ -368,7 +368,7 @@ class PRISMBenchmark {
     console.log(`   • GPU Acceleration: Optional (WebGPU)`);
     console.log(`   • Adaptive Batching: Dynamic sizing (8-64)`);
 
-    console.log('\n✅ PRISM 2026 is production-ready for edge AI inference!\n');
+    console.log('\n✅ PRISM benchmark suite completed. Validate production fit with real models and traffic.\n');
   }
 
   async run(): Promise<void> {

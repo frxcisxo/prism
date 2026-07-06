@@ -86,11 +86,11 @@ Modern AI applications need distributed inference that works reliably across edg
 
 ### Advanced Optimizations (2026)
 
-PRISM includes cutting-edge optimizations for maximum performance:
+PRISM includes validated building blocks for high-performance edge AI systems:
 
-- **🔮 Predictive Caching** - Learns access patterns, predicts TTL, 100MB+ efficient cache
+- **🔮 Predictive Caching** - Access-pattern-aware cache policy and configurable cache limits
 - **🌊 Streaming Responses** - Real-time token streaming for instant feedback
-- **🔀 Model Sharding** - Load massive models (70B+) across multiple nodes
+- **🔀 Verified Model Sharding** - Ordered shard loading, SHA-256 checks, and artifact assembly
 - **📈 Adaptive Batching** - Dynamic batch sizing based on load and latency
 - **🚀 Binary Serialization** - Efficient network sync with compression
 - **🏊 Memory Pooling** - Object reuse to eliminate GC pressure
@@ -99,30 +99,32 @@ PRISM includes cutting-edge optimizations for maximum performance:
 
 ### Real-world Use Cases
 
-- **Real-time Chat** - LLM responses in <50ms from user's region
-- **AR Overlays** - Computer vision inference on mobile (instant)
-- **Industrial IoT** - Autonomous systems making decisions without cloud latency
-- **Autonomous Vehicles** - Can't wait 200ms for cloud roundtrip
-- **Financial Trading** - Microsecond-level decision-making
+- **Real-time Chat** - Regional inference routing, cache hits, and resilient fallback paths
+- **AR Overlays** - Computer vision pipelines that can keep routing metadata local
+- **Industrial IoT** - Edge systems that continue queuing and syncing through network interruptions
+- **Autonomous Systems** - Local decision support where cloud roundtrips are too costly
+- **Financial Workloads** - Local routing and cache primitives for latency-sensitive systems
 - **Smart Cities** - Distributed processing across thousands of sensors
 
-## 📊 CRDT Impact & ROI Analysis
+## 📊 Impact Model
 
-PRISM's CRDT implementation delivers **quantifiable business value**:
+PRISM's CRDT implementation is designed to reduce coordination risk in edge deployments. The exact ROI depends on traffic, outage cost, support burden, and deployment footprint, so treat the numbers below as planning scenarios rather than guaranteed outcomes.
 
-### Key Benefits
-- **🔒 85% reduction** in consistency-related bugs
-- **🚀 300% improvement** in concurrent operation throughput
-- **💰 70% reduction** in support tickets for sync conflicts
-- **⚡ <50ms latency** for distributed operations (vs 500-2000ms)
-- **📈 99.9% uptime** with offline resilience
+### Expected Benefit Areas
+- **🔒 Fewer consistency bugs** from CRDT merge semantics and deterministic conflict resolution
+- **🚀 Higher concurrent operation throughput** by avoiding central coordination on hot paths
+- **💰 Lower support burden** when offline queues, cache hits, and convergence are observable
+- **⚡ Lower perceived latency** when routing, caching, and fallback happen close to users
+- **📈 Better resilience** through local state, sync recovery, fallback runtimes, and circuit breakers
 
-### ROI Timeline
-- **Break-even**: 8-12 months
-- **2-year ROI**: 280-350%
-- **3-year ROI**: 450-600%
+### ROI Inputs to Measure
+- Outage cost per hour
+- Percentage of traffic that can be served locally or from cache
+- Support volume caused by sync conflicts
+- Cloud inference spend that can move to edge or hybrid routing
+- Operational value of health checks, alert states, and Prometheus metrics
 
-**Total Investment**: $260K-445K → **Annual Benefits**: $440K+ in reduced costs and improved performance.
+Use PRISM's demos and validation scripts as the starting point for a proof of value: model deployment, CRDT merge, routed inference, cache hit, ONNX execution, resilient fallback, alert summaries, metrics, and packaged install checks are all reproducible today.
 
 ## Installation
 
@@ -316,13 +318,11 @@ const alertSummary = monitor.getAlertSummary();
 
 When the primary runtime crosses the failure threshold, PRISM opens the circuit, routes to the fallback without touching the failing provider, and later probes recovery in `half-open` state. Inference outputs include `raw.circuitBreaker`, and `onEvent` emits typed operational events for retries, primary/fallback success or failure, circuit state changes, and skipped primary calls. `ResilientRuntimeMonitor` converts those events into bounded health snapshots (`healthy`, `degraded`, `recovering`, or `unavailable`), JSON reports, HTTP-friendly health checks, Prometheus text metrics, local alert evaluations, active/resolved alert state tracking, and compact alert summaries for dashboards, alerts, `/health`, and `/metrics` endpoints.
 
-### ONNX Runtime Web (Optional Real Runtime)
+### ONNX Runtime Web (Included Runtime Adapter)
 
-Install the optional runtime when you want PRISM to execute ONNX models directly:
+PRISM includes `onnxruntime-web` so installed packages can run the ONNX demo and execute ONNX models directly. Choose `OnnxRuntimeWebRuntime` when you want real ONNX execution instead of the safe simulated runtime:
 
-```bash
-npm install onnxruntime-web
-```
+No extra install is required when using the published PRISM package.
 
 ```typescript
 import { InferenceEngine, OnnxRuntimeWebRuntime } from '@frxncisxo/prism/inference';
@@ -752,7 +752,7 @@ new NetlifyBlobsEdgeCache(store);
 
 ## 🚀 Advanced Optimizations
 
-PRISM includes production-ready optimizations for maximum performance in 2026.
+PRISM includes validated optimization foundations for edge AI workloads. Production deployments should still benchmark with real models, traffic, and provider limits.
 
 ### Predictive Caching & Memory Pooling
 
@@ -1058,7 +1058,7 @@ All models fit on modern edge hardware after quantization.
 ### Format Support
 
 - ✅ ONNX (.onnx)
-- ✅ ONNX Runtime Web execution via optional peer dependency
+- ✅ ONNX Runtime Web execution via bundled dependency and peer-compatible runtime adapter
 - ✅ TensorFlow Lite (.tflite)
 - ✅ GGLM / llama.cpp (.gguf)
 - ✅ JAX / PyTorch (with converters)

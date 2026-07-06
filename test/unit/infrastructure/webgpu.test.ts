@@ -59,7 +59,15 @@ const mockCommandEncoder = {
 };
 
 // Setup global mocks
-Object.defineProperty(navigator, 'gpu', {
+if (!('navigator' in globalThis)) {
+  Object.defineProperty(globalThis, 'navigator', {
+    value: {},
+    writable: true,
+    configurable: true
+  });
+}
+
+Object.defineProperty(globalThis.navigator, 'gpu', {
   value: mockGPU,
   writable: true,
   configurable: true

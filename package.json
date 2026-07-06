@@ -2,7 +2,7 @@
   "name": "@frxncisxo/prism",
   "version": "1.0.2",
   "type": "module",
-  "description": "🔮 AI-Powered Edge Orchestration & Distributed Inference. Deploy ML models at the edge with real-time sync, automatic conflict resolution, and zero downtime.",
+  "description": "CRDT-first edge AI orchestration toolkit with distributed sync, resilient inference runtimes, verified demos, and typed TypeScript APIs.",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",

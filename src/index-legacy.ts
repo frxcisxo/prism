@@ -1,8 +1,8 @@
 /**
  * 🔮 PRISM - AI-Powered Edge Orchestration & Distributed Inference
  *
- * Deploy ML models at the edge with real-time sync, automatic conflict resolution,
- * and zero downtime. Built for 2026: Bun-fast, Deno-secure, Vercel-deployed.
+ * Coordinate edge AI workloads with CRDT sync, resilient runtime fallbacks,
+ * verified demos, and TypeScript-first APIs.
  *
  * 🚀 OPTIMIZATIONS:
  * - WebGPU acceleration for browser inference
@@ -12,7 +12,7 @@
  * - Adaptive batching with dynamic sizing
  * - Connection pooling for persistent links
  * - Model sharding for large models
- * - Streaming responses for instant feedback
+ * - Streaming response contracts for token deltas and final chunks
  */
 
 import { EventEmitter } from 'node:events';
