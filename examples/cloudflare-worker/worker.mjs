@@ -40,6 +40,7 @@ function createAdapter(request, env = {}) {
     cacheTtl: Number(env.PRISM_CACHE_TTL || 120),
     model,
     cache: createCache(env),
+    cors: true,
     edgeConfig: {
       platform: 'cloudflare',
       region: colo,
@@ -63,61 +64,8 @@ function createAdapter(request, env = {}) {
   return gateway;
 }
 
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      ...corsHeaders(),
-    },
-  });
-}
-
-function corsHeaders() {
-  return {
-    'access-control-allow-origin': '*',
-    'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type,authorization',
-  };
-}
-
-function withCors(response) {
-  const headers = new Headers(response.headers);
-
-  for (const [key, value] of Object.entries(corsHeaders())) {
-    headers.set(key, value);
-  }
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-async function health(request, env) {
-  return createAdapter(request, env).health();
-}
-
 export default {
   async fetch(request, env = {}) {
-    const url = new URL(request.url);
-
-    if (request.method === 'OPTIONS') {
-      return json({ ok: true });
-    }
-
-    if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
-      return json(await health(request, env));
-    }
-
-    if (request.method === 'POST' && url.pathname === '/infer') {
-      return withCors(await createAdapter(request, env).handleInferenceRequest(request));
-    }
-
-    return json({
-      error: 'Not found',
-      endpoints: ['GET /health', 'POST /infer'],
-    }, 404);
+    return createAdapter(request, env).handleRequest(request);
   },
 };

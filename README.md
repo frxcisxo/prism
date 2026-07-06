@@ -186,7 +186,7 @@ Example request body:
 
 ### PrismEdgeGateway
 
-Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, and share an edge cache across requests.
+Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, handle CORS/preflight/404 responses, and share an edge cache across requests.
 
 ```typescript
 import { PrismEdgeGateway } from '@frxncisxo/prism/edge';
@@ -197,6 +197,7 @@ const gateway = new PrismEdgeGateway({
   region: 'iad',
   edgeId: 'cloudflare-iad',
   cacheTtl: 120,
+  cors: true,
   model: {
     id: 'edge-triage-small',
     name: 'Edge Triage Small',
@@ -209,17 +210,7 @@ const gateway = new PrismEdgeGateway({
 
 export default {
   async fetch(request: Request) {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/health') {
-      return Response.json(await gateway.health());
-    }
-
-    if (request.method === 'POST' && url.pathname === '/infer') {
-      return gateway.handleInferenceRequest(request);
-    }
-
-    return new Response('Not found', { status: 404 });
+    return gateway.handleRequest(request);
   },
 };
 ```

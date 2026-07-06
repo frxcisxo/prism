@@ -24,6 +24,18 @@ export interface PrismEdgeGatewayHealth {
   };
 }
 
+export interface PrismEdgeGatewayRoutes {
+  health?: string;
+  infer?: string;
+  rootHealth?: boolean;
+}
+
+export interface PrismEdgeGatewayCorsConfig {
+  origin?: string;
+  methods?: string[];
+  headers?: string[];
+}
+
 export interface PrismEdgeGatewayConfig {
   nodeId: string;
   model: InferenceModel;
@@ -36,6 +48,8 @@ export interface PrismEdgeGatewayConfig {
   cache?: EdgeCache;
   capabilities?: EdgeNode['capabilities'];
   edgeConfig?: EdgeConfig | ((request: Request) => EdgeConfig);
+  routes?: PrismEdgeGatewayRoutes;
+  cors?: boolean | PrismEdgeGatewayCorsConfig;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -80,6 +94,31 @@ export class PrismEdgeGateway {
     } satisfies EdgeAdapterDependencies);
 
     return adapter.handleRequest(request);
+  }
+
+  async handleRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const routes = this.resolveRoutes();
+
+    if (request.method === 'OPTIONS') {
+      return this.jsonResponse({ ok: true });
+    }
+
+    if (
+      request.method === 'GET'
+      && (url.pathname === routes.health || (routes.rootHealth && url.pathname === '/'))
+    ) {
+      return this.jsonResponse(await this.health());
+    }
+
+    if (request.method === 'POST' && url.pathname === routes.infer) {
+      return this.withCors(await this.handleInferenceRequest(request));
+    }
+
+    return this.jsonResponse({
+      error: 'Not found',
+      endpoints: [`GET ${routes.health}`, `POST ${routes.infer}`],
+    }, 404);
   }
 
   async health(): Promise<PrismEdgeGatewayHealth> {
@@ -145,6 +184,52 @@ export class PrismEdgeGateway {
       region: this.config.region,
       cacheTtl: this.config.cacheTtl,
       edgeId: this.config.edgeId,
+    };
+  }
+
+  private resolveRoutes(): Required<PrismEdgeGatewayRoutes> {
+    return {
+      health: this.config.routes?.health ?? '/health',
+      infer: this.config.routes?.infer ?? '/infer',
+      rootHealth: this.config.routes?.rootHealth ?? true,
+    };
+  }
+
+  private jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        ...this.corsHeaders(),
+      },
+    });
+  }
+
+  private withCors(response: Response): Response {
+    const headers = new Headers(response.headers);
+
+    for (const [key, value] of Object.entries(this.corsHeaders())) {
+      headers.set(key, value);
+    }
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  private corsHeaders(): Record<string, string> {
+    if (!this.config.cors) {
+      return {};
+    }
+
+    const cors = this.config.cors === true ? {} : this.config.cors;
+
+    return {
+      'access-control-allow-origin': cors.origin ?? '*',
+      'access-control-allow-methods': (cors.methods ?? ['GET', 'POST', 'OPTIONS']).join(','),
+      'access-control-allow-headers': (cors.headers ?? ['content-type', 'authorization']).join(','),
     };
   }
 }

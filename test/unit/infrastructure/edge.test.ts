@@ -375,5 +375,66 @@ describe('Edge Adapters', () => {
 
       expect(body.data.edgeId).toBe('cloudflare-dfw');
     });
+
+    it('should serve health, inference, CORS preflight, and not-found through the HTTP router', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'router-gateway-node',
+        platform: 'cloudflare',
+        region: 'iad',
+        model,
+        cors: true,
+      });
+
+      const health = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const preflight = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'OPTIONS',
+      }));
+      const inference = await gateway.handleRequest(inferenceRequest('router-1', 'Route through router.'));
+      const notFound = await gateway.handleRequest(new Request('https://edge.test/missing'));
+      const healthBody = await health.json();
+      const preflightBody = await preflight.json();
+      const inferenceBody = await inference.json();
+      const notFoundBody = await notFound.json();
+
+      expect(health.status).toBe(200);
+      expect(healthBody.ok).toBe(true);
+      expect(preflight.status).toBe(200);
+      expect(preflightBody.ok).toBe(true);
+      expect(inference.status).toBe(200);
+      expect(inferenceBody.success).toBe(true);
+      expect(notFound.status).toBe(404);
+      expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer']);
+      expect(inference.headers.get('access-control-allow-origin')).toBe('*');
+      expect(health.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
+    });
+
+    it('should support custom HTTP router paths', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'custom-router-gateway-node',
+        platform: 'vercel',
+        model,
+        routes: {
+          health: '/api/ready',
+          infer: '/api/prism',
+          rootHealth: false,
+        },
+      });
+
+      const root = await gateway.handleRequest(new Request('https://edge.test/'));
+      const health = await gateway.handleRequest(new Request('https://edge.test/api/ready'));
+      const inference = await gateway.handleRequest(new Request('https://edge.test/api/prism', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'custom-route-1', modelId: model.id, input: 'Use custom route.' }),
+      }));
+      const rootBody = await root.json();
+      const healthBody = await health.json();
+      const inferenceBody = await inference.json();
+
+      expect(root.status).toBe(404);
+      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'POST /api/prism']);
+      expect(healthBody.ok).toBe(true);
+      expect(inference.status).toBe(200);
+      expect(inferenceBody.success).toBe(true);
+    });
   });
 });

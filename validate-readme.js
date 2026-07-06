@@ -577,9 +577,12 @@ try {
   }));
   const firstGatewayBody = await firstGatewayResponse.json();
   const repeatGatewayBody = await repeatGatewayResponse.json();
+  const routerHealthResponse = await gateway.handleRequest(new Request('https://prism.local/health'));
+  const routerHealthBody = await routerHealthResponse.json();
 
   if (
     !health.ok
+    || !routerHealthBody.ok
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
     || firstGatewayBody.data.output.region !== 'validation'
