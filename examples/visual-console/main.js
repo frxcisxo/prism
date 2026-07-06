@@ -1,5 +1,25 @@
 const state = {
   events: [],
+  activePreset: 'retail',
+};
+
+const presets = {
+  retail: {
+    prompt: 'Plan a safe edge deployment for a retail store with cameras, inventory events, and intermittent WAN.',
+    summary: 'Retail edge nodes keep planning and cache repeated store requests while fallback protects remote inference.',
+  },
+  industrial: {
+    prompt: 'Detect machine anomalies at a factory cell, keep inference local during provider failure, and sync state after network recovery.',
+    summary: 'Industrial nodes route low-latency anomaly checks locally, then use resilient fallback when the primary runtime fails.',
+  },
+  clinic: {
+    prompt: 'Coordinate mobile clinic triage assistance where connectivity drops, patient data must stay local, and results sync later.',
+    summary: 'Mobile clinic workflows keep sensitive prompts local, queue state through outages, and expose health for operators.',
+  },
+  logistics: {
+    prompt: 'Optimize warehouse routing for scanners and cameras while repeated requests hit cache and edge nodes converge.',
+    summary: 'Logistics teams can test cache hits, node convergence, and resilient routing for busy warehouse decisions.',
+  },
 };
 
 const els = {
@@ -14,6 +34,8 @@ const els = {
   modelCount: document.querySelector('#modelCount'),
   cacheBadge: document.querySelector('#cacheBadge'),
   promptInput: document.querySelector('#promptInput'),
+  useCaseOutput: document.querySelector('#useCaseOutput'),
+  presetButtons: Array.from(document.querySelectorAll('[data-preset]')),
   inferenceOutput: document.querySelector('#inferenceOutput'),
   shardStatus: document.querySelector('#shardStatus'),
   shardA: document.querySelector('#shardA'),
@@ -39,6 +61,7 @@ const els = {
 
 function resetState() {
   state.events = [];
+  applyPreset(state.activePreset);
   els.networkStatus.textContent = 'Ready';
   els.syncState.textContent = 'Not synced';
   els.syncLine.classList.remove('synced');
@@ -66,6 +89,16 @@ function resetState() {
   els.resilienceOutput.textContent = 'Resilient runtime health will appear after the scenario runs.';
   els.metricsPreview.textContent = 'Prometheus metrics preview will appear here.';
   renderEvents();
+}
+
+function applyPreset(presetId) {
+  const preset = presets[presetId] || presets.retail;
+  state.activePreset = presetId in presets ? presetId : 'retail';
+  els.promptInput.value = preset.prompt;
+  els.useCaseOutput.textContent = preset.summary;
+  els.presetButtons.forEach(button => {
+    button.classList.toggle('active', button.dataset.preset === state.activePreset);
+  });
 }
 
 function addEvent(message) {
@@ -203,6 +236,13 @@ els.resetDemo.addEventListener('click', () => {
       els.networkStatus.textContent = 'Error';
       addEvent(error.message);
     });
+});
+els.presetButtons.forEach(button => {
+  button.addEventListener('click', () => {
+    applyPreset(button.dataset.preset);
+    els.cacheBadge.textContent = 'Cold';
+    els.inferenceOutput.textContent = 'Run the scenario to route the first request.';
+  });
 });
 
 resetState();

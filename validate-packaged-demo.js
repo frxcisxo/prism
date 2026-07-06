@@ -80,6 +80,9 @@ function assertPackagedVisual(data) {
   ) {
     throw new Error('packaged visual console did not exercise resilient fallback');
   }
+  if (!data.inference?.output?.text?.includes('Validate packaged PRISM visual console')) {
+    throw new Error('packaged visual console did not use the provided prompt');
+  }
 }
 
 console.log('PRISM packaged demo validation\n');
@@ -143,6 +146,10 @@ try {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   await waitForServer(server, baseUrl);
+  const html = await fetch(baseUrl).then(response => response.text());
+  if (!html.includes('data-preset="retail"') || !html.includes('data-preset="clinic"')) {
+    throw new Error('packaged visual console did not include use-case presets');
+  }
   const scenario = await postJson('/api/scenario', {
     prompt: 'Validate packaged PRISM visual console.',
   });

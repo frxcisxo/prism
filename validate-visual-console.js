@@ -119,7 +119,12 @@ try {
   await waitForServer();
 
   const html = await fetch(baseUrl).then(response => response.text());
-  if (!html.includes('Resilient Runtime') || !html.includes('Runtime Diagnostics')) {
+  if (
+    !html.includes('Resilient Runtime')
+    || !html.includes('Runtime Diagnostics')
+    || !html.includes('data-preset="industrial"')
+    || !html.includes('data-preset="clinic"')
+  ) {
     throw new Error('visual console HTML is missing expected panels');
   }
 

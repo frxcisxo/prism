@@ -67,6 +67,25 @@
             <h2>Inference</h2>
             <span id="cacheBadge">Cold</span>
           </div>
+          <div class="preset-grid" aria-label="Use case presets">
+            <button class="preset-button active" type="button" data-preset="retail">
+              <strong>Retail</strong>
+              <small>Store camera and inventory edge AI</small>
+            </button>
+            <button class="preset-button" type="button" data-preset="industrial">
+              <strong>Industrial</strong>
+              <small>Machine anomaly detection fallback</small>
+            </button>
+            <button class="preset-button" type="button" data-preset="clinic">
+              <strong>Clinic</strong>
+              <small>Mobile triage with poor connectivity</small>
+            </button>
+            <button class="preset-button" type="button" data-preset="logistics">
+              <strong>Logistics</strong>
+              <small>Warehouse routing and local cache</small>
+            </button>
+          </div>
+          <div class="result-box compact use-case-box" id="useCaseOutput">Retail edge nodes keep planning and cache repeated store requests while fallback protects remote inference.</div>
           <label class="input-label" for="promptInput">Prompt</label>
           <textarea id="promptInput" rows="4">Plan a safe edge deployment for a retail store.</textarea>
           <div class="result-box" id="inferenceOutput">Run the scenario to route the first request.</div>

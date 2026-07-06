@@ -87,7 +87,7 @@ button {
   font-weight: 750;
 }
 
-button:first-child {
+.control-strip button:first-child {
   border-color: #166a5c;
   background: #0f7b68;
   color: #ffffff;
@@ -95,6 +95,11 @@ button:first-child {
 
 button:hover {
   filter: brightness(0.98);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
 }
 
 .dashboard {
@@ -244,6 +249,40 @@ small {
   font-weight: 750;
 }
 
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.preset-button {
+  min-height: 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  border-color: #d8e1ea;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.preset-button.active {
+  border-color: #0f7b68;
+  background: #eefaf6;
+  color: #0e5d50;
+}
+
+.preset-button strong,
+.preset-button small {
+  overflow-wrap: anywhere;
+}
+
+.use-case-box {
+  margin: 0 0 12px;
+}
+
 textarea {
   width: 100%;
   resize: vertical;
@@ -333,7 +372,8 @@ li {
 
   .dashboard,
   .node-map,
-  .diagnostic-grid {
+  .diagnostic-grid,
+  .preset-grid {
     grid-template-columns: 1fr;
   }
 
