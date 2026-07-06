@@ -119,6 +119,8 @@ try {
   for (const file of [
     'demo.js',
     'demo-onnx.js',
+    'examples/cloudflare-worker/worker.mjs',
+    'examples/cloudflare-worker/local-smoke.mjs',
     'examples/visual-console/server.js',
     'examples/visual-console/index.html',
     'examples/visual-console/main.js',
@@ -136,6 +138,9 @@ try {
 
   run('npm', ['run', 'demo:onnx'], { cwd: packageDir });
   console.log('OK packaged ONNX demo');
+
+  run('npm', ['run', 'example:cloudflare'], { cwd: packageDir });
+  console.log('OK packaged Cloudflare Worker example');
 
   server = spawn(process.execPath, ['examples/visual-console/server.js'], {
     cwd: packageDir,

@@ -143,6 +143,7 @@ npm install
 npm run build
 npm run demo
 npm run demo:onnx
+npm run example:cloudflare
 npm run example:visual
 ```
 
@@ -152,9 +153,36 @@ The demos run against PRISM's compiled package. In a local checkout, run `npm ru
 
 `npm run demo:onnx` executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
 
+`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node, deploys `edge-triage-small`, handles `POST /infer` through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, and rejects invalid requests with safe validation errors.
+
 `npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI includes retail, industrial, clinic, and logistics presets, then calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, resilient runtime fallback health, alert summaries, a Prometheus metrics preview, and verified shard assembly.
 
-Release validation also packs PRISM, installs it into a clean temporary project, and runs `demo`, `demo:onnx`, and the visual console API from the installed package.
+Release validation also packs PRISM, installs it into a clean temporary project, and runs `demo`, `demo:onnx`, the Cloudflare Worker smoke test, and the visual console API from the installed package.
+
+### Cloudflare Worker Example
+
+The Worker example is a deployment-oriented slice for regional triage, routing, and cacheable inference. It is useful when a product needs to classify or route requests close to users while preserving PRISM's model registry, edge response envelope, and cache behavior.
+
+```bash
+npm run build
+npm run example:cloudflare
+```
+
+To adapt it for Cloudflare, bind a KV namespace as `PRISM_CACHE` and point Worker traffic at:
+
+- `GET /health` for model and node readiness
+- `POST /infer` for PRISM inference envelopes
+
+Example request body:
+
+```json
+{
+  "id": "retail-alert-001",
+  "modelId": "edge-triage-small",
+  "input": "Prioritize an urgent store shelf anomaly at the edge.",
+  "options": { "priority": "high" }
+}
+```
 
 ## Quick Start
 

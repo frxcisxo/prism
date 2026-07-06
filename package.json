@@ -28,6 +28,7 @@
     "demo.js",
     "demo-onnx.js",
     "examples/visual-console",
+    "examples/cloudflare-worker",
     "test/fixtures/onnx/add-one.onnx",
     "README.md",
     "LICENSE"
@@ -40,15 +41,16 @@
     "demo:onnx": "node demo-onnx.js",
     "demo:all": "node demo.js && node demo-onnx.js",
     "example:visual": "node examples/visual-console/server.js",
+    "example:cloudflare": "node examples/cloudflare-worker/local-smoke.mjs",
     "test": "vitest",
     "test:ui": "vitest --ui",
     "test:performance": "vitest --run --reporter=verbose bench/",
-    "validate": "npm run build && node validate-readme.js && node validate-visual-console.js && node validate-packaged-demo.js",
-    "ci": "npm run type-check && npm test -- --run && npm run build && node validate-readme.js && node validate-visual-console.js && node validate-packaged-demo.js && npm audit --omit=dev && npm pack --dry-run",
+    "validate": "npm run build && node validate-readme.js && npm run example:cloudflare && node validate-visual-console.js && node validate-packaged-demo.js",
+    "ci": "npm run type-check && npm test -- --run && npm run build && node validate-readme.js && npm run example:cloudflare && node validate-visual-console.js && node validate-packaged-demo.js && npm audit --omit=dev && npm pack --dry-run",
     "lint": "eslint src --fix",
     "type-check": "tsc --noEmit",
     "size-check": "npm run build && du -sh dist/",
-    "prepublishOnly": "npm run type-check && npm run build:optimized && npm test -- --run && node validate-readme.js && node validate-visual-console.js && node validate-packaged-demo.js"
+    "prepublishOnly": "npm run type-check && npm run build:optimized && npm test -- --run && node validate-readme.js && npm run example:cloudflare && node validate-visual-console.js && node validate-packaged-demo.js"
   },
   "keywords": [
     "edge-ai",
