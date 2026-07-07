@@ -92,6 +92,22 @@ export interface PrismEdgeGatewayTraceConfig {
   generateId?: (request: Request) => string;
 }
 
+export interface PrismEdgeGatewayRequestEvent {
+  type: 'request';
+  service: string;
+  route: PrismEdgeGatewayObservedRouteName;
+  method: string;
+  path: string;
+  status: number;
+  latencyMs: number;
+  requestId?: string;
+  unauthorized: boolean;
+  rateLimited: boolean;
+  timestamp: number;
+}
+
+export type PrismEdgeGatewayEvent = PrismEdgeGatewayRequestEvent;
+
 export interface PrismEdgeGatewayAuthConfig {
   bearerToken?: string | string[];
   authorize?: (
@@ -128,6 +144,7 @@ export interface PrismEdgeGatewayConfig {
   rateLimit?: PrismEdgeGatewayRateLimitConfig;
   metrics?: PrismEdgeGatewayMetricsConfig | false;
   trace?: PrismEdgeGatewayTraceConfig | false;
+  onEvent?: (event: PrismEdgeGatewayEvent) => void | Promise<void>;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -184,7 +201,7 @@ export class PrismEdgeGateway {
     const routes = this.resolveRoutes();
 
     if (request.method === 'OPTIONS') {
-      return this.recordResponse('preflight', startedAt, this.jsonResponse({ ok: true }), requestId);
+      return this.recordResponse(request, 'preflight', startedAt, this.jsonResponse({ ok: true }), requestId);
     }
 
     if (
@@ -193,60 +210,60 @@ export class PrismEdgeGateway {
     ) {
       const unauthorized = await this.unauthorizedResponse(request, 'health');
       if (unauthorized) {
-        return this.recordResponse('health', startedAt, unauthorized, requestId);
+        return this.recordResponse(request, 'health', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'health');
       if (limited) {
-        return this.recordResponse('health', startedAt, limited, requestId);
+        return this.recordResponse(request, 'health', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('health', startedAt, this.jsonResponse(await this.health()), requestId);
+      return this.recordResponse(request, 'health', startedAt, this.jsonResponse(await this.health()), requestId);
     }
 
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
       const unauthorized = await this.unauthorizedResponse(request, 'openapi');
       if (unauthorized) {
-        return this.recordResponse('openapi', startedAt, unauthorized, requestId);
+        return this.recordResponse(request, 'openapi', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'openapi');
       if (limited) {
-        return this.recordResponse('openapi', startedAt, limited, requestId);
+        return this.recordResponse(request, 'openapi', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('openapi', startedAt, this.jsonResponse(this.getOpenAPISpec()), requestId);
+      return this.recordResponse(request, 'openapi', startedAt, this.jsonResponse(this.getOpenAPISpec()), requestId);
     }
 
     if (this.metricsEnabled() && request.method === 'GET' && url.pathname === routes.metrics) {
       const unauthorized = await this.unauthorizedResponse(request, 'metrics');
       if (unauthorized) {
-        return this.recordResponse('metrics', startedAt, unauthorized, requestId);
+        return this.recordResponse(request, 'metrics', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'metrics');
       if (limited) {
-        return this.recordResponse('metrics', startedAt, limited, requestId);
+        return this.recordResponse(request, 'metrics', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('metrics', startedAt, this.metricsResponse(), requestId);
+      return this.recordResponse(request, 'metrics', startedAt, this.metricsResponse(), requestId);
     }
 
     if (request.method === 'POST' && url.pathname === routes.infer) {
       const unauthorized = await this.unauthorizedResponse(request, 'infer');
       if (unauthorized) {
-        return this.recordResponse('infer', startedAt, unauthorized, requestId);
+        return this.recordResponse(request, 'infer', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'infer');
       if (limited) {
-        return this.recordResponse('infer', startedAt, limited, requestId);
+        return this.recordResponse(request, 'infer', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('infer', startedAt, this.withCors(await this.handleInferenceRequest(request)), requestId);
+      return this.recordResponse(request, 'infer', startedAt, this.withCors(await this.handleInferenceRequest(request)), requestId);
     }
 
-    return this.recordResponse('notFound', startedAt, this.jsonResponse({
+    return this.recordResponse(request, 'notFound', startedAt, this.jsonResponse({
       error: 'Not found',
       endpoints: this.routeList(routes),
     }, 404), requestId);
@@ -773,6 +790,7 @@ export class PrismEdgeGateway {
   }
 
   private recordResponse(
+    request: Request,
     route: PrismEdgeGatewayObservedRouteName,
     startedAt: number,
     response: Response,
@@ -808,7 +826,33 @@ export class PrismEdgeGateway {
     routeMetrics.averageLatencyMs = this.average(routeMetrics.latencyMs, routeMetrics.requests);
     routeMetrics.status[status] = (routeMetrics.status[status] ?? 0) + 1;
 
+    this.emitEvent({
+      type: 'request',
+      service: this.config.serviceName ?? 'prism-edge-gateway',
+      route,
+      method: request.method,
+      path: new URL(request.url).pathname,
+      status: tracedResponse.status,
+      latencyMs: elapsed,
+      requestId,
+      unauthorized: tracedResponse.status === 401,
+      rateLimited: tracedResponse.status === 429,
+      timestamp: Date.now(),
+    });
+
     return tracedResponse;
+  }
+
+  private emitEvent(event: PrismEdgeGatewayEvent): void {
+    if (!this.config.onEvent) {
+      return;
+    }
+
+    try {
+      void Promise.resolve(this.config.onEvent(event)).catch(() => undefined);
+    } catch (_error) {
+      // Observability hooks must not break edge traffic.
+    }
   }
 
   private cloneMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {

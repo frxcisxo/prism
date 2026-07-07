@@ -229,6 +229,9 @@ const gateway = new PrismEdgeGateway({
     // Defaults to x-prism-request-id and preserves incoming IDs for log correlation.
     header: 'x-prism-request-id',
   },
+  onEvent: event => {
+    console.log(event.type, event.route, event.status, event.requestId);
+  },
   model: {
     id: 'edge-triage-small',
     name: 'Edge Triage Small',
@@ -256,6 +259,8 @@ Default gateway endpoints:
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, 5xx errors, and latency samples.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
+
+`onEvent` emits non-blocking typed request events with route, method, path, status, latency, trace ID, and auth/rate-limit flags. Use it to bridge PRISM into your logger, analytics sink, or edge observability pipeline without wrapping every handler yourself.
 
 ### PrismEdgeClient
 

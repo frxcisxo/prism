@@ -538,6 +538,7 @@ try {
     throw new Error('Cloudflare KV cache adapter did not persist with expirationTtl');
   }
 
+  const gatewayEvents = [];
   const gateway = new PrismEdgeGateway({
     nodeId: 'validation-gateway',
     platform: 'cloudflare',
@@ -557,6 +558,9 @@ try {
         region: context.region,
       },
     }),
+    onEvent: event => {
+      gatewayEvents.push(event);
+    },
   });
   const health = await gateway.health();
   const firstGatewayResponse = await gateway.handleInferenceRequest(new Request('https://prism.local/infer', {
@@ -688,6 +692,8 @@ try {
     || !routerHealthBody.ok
     || routerHealthResponse.headers.get('x-prism-request-id') !== 'validation-trace-id'
     || clientTraceHeader !== 'validation-client-trace-id'
+    || !gatewayEvents.some(event => event.route === 'health' && event.requestId === 'validation-trace-id')
+    || !gatewayEvents.some(event => event.route === 'infer' && event.status === 200)
     || !clientHealth.ok
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'

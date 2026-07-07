@@ -467,6 +467,97 @@ describe('Edge Adapters', () => {
       expect(preflight.headers.get('access-control-allow-headers')).not.toContain('x-prism-request-id');
     });
 
+    it('should emit typed gateway request events with trace and latency data', async () => {
+      const events: unknown[] = [];
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'event-gateway-node',
+        serviceName: 'event-gateway',
+        platform: 'cloudflare',
+        model,
+        onEvent: event => {
+          events.push(event);
+        },
+      });
+
+      const response = await gateway.handleRequest(new Request('https://edge.test/health', {
+        headers: { 'x-prism-request-id': 'event-trace-id' },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'request',
+        service: 'event-gateway',
+        route: 'health',
+        method: 'GET',
+        path: '/health',
+        status: 200,
+        requestId: 'event-trace-id',
+        unauthorized: false,
+        rateLimited: false,
+      });
+      expect((events[0] as { latencyMs: number }).latencyMs).toBeGreaterThanOrEqual(0);
+      expect((events[0] as { timestamp: number }).timestamp).toBeGreaterThan(0);
+    });
+
+    it('should emit unauthorized and rate-limited gateway request events', async () => {
+      const events: Array<{ route?: string; status?: number; unauthorized?: boolean; rateLimited?: boolean }> = [];
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'event-security-gateway-node',
+        platform: 'cloudflare',
+        model,
+        auth: {
+          bearerToken: 'event-token',
+        },
+        rateLimit: {
+          limit: 1,
+          windowMs: 60_000,
+        },
+        onEvent: event => {
+          events.push(event);
+        },
+      });
+
+      await gateway.handleRequest(inferenceRequest('event-denied', 'No token.'));
+      await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer event-token',
+          'cf-connecting-ip': '203.0.113.77',
+        },
+        body: JSON.stringify({ id: 'event-first', modelId: model.id, input: 'Allowed.' }),
+      }));
+      await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer event-token',
+          'cf-connecting-ip': '203.0.113.77',
+        },
+        body: JSON.stringify({ id: 'event-limited', modelId: model.id, input: 'Limited.' }),
+      }));
+
+      expect(events.map(event => event.status)).toEqual([401, 200, 429]);
+      expect(events[0]).toMatchObject({ route: 'infer', unauthorized: true, rateLimited: false });
+      expect(events[2]).toMatchObject({ route: 'infer', unauthorized: false, rateLimited: true });
+    });
+
+    it('should not fail gateway traffic when event handlers throw', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'throwing-event-gateway-node',
+        platform: 'cloudflare',
+        model,
+        onEvent: () => {
+          throw new Error('event sink unavailable');
+        },
+      });
+
+      const response = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.ok).toBe(true);
+    });
+
     it('should support custom HTTP router paths', async () => {
       const gateway = new PrismEdgeGateway({
         nodeId: 'custom-router-gateway-node',
