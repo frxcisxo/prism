@@ -273,6 +273,9 @@ const client = new PrismEdgeClient({
     backoffMs: 100,
     maxBackoffMs: 1_000,
   },
+  trace: {
+    requestId: () => crypto.randomUUID(),
+  },
 });
 
 const health = await client.health();
@@ -286,6 +289,8 @@ const result = await client.infer({
 ```
 
 Client retries are opt-in and target transient conditions by default: `408`, `425`, `429`, `500`, `502`, `503`, and `504`, plus network failures and timeouts. `Retry-After` is respected and capped by `maxRetryAfterMs` so dashboards and edge jobs do not hang unexpectedly.
+
+Set `trace.requestId` to attach `x-prism-request-id` to client calls. Retries reuse the same trace ID for the logical request, so gateway logs and client errors remain correlated.
 
 ## Quick Start
 

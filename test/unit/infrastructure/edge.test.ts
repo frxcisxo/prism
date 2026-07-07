@@ -863,6 +863,92 @@ describe('Edge Adapters', () => {
       } satisfies Partial<PrismEdgeClientError>);
     });
 
+    it('should send configurable trace headers to the gateway', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'client-trace-gateway-node',
+        platform: 'cloudflare',
+        model,
+      });
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        trace: {
+          requestId: 'client-trace-id',
+        },
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return gateway.handleRequest(request);
+        },
+      });
+
+      const health = await client.health();
+
+      expect(health.ok).toBe(true);
+      expect(requests[0].headers.get('x-prism-request-id')).toBe('client-trace-id');
+    });
+
+    it('should preserve custom headers over generated client trace headers', async () => {
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        headers: { 'x-correlation-id': 'manual-correlation-id' },
+        trace: {
+          header: 'x-correlation-id',
+          requestId: 'generated-correlation-id',
+        },
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+
+      await client.health();
+
+      expect(requests[0].headers.get('x-correlation-id')).toBe('manual-correlation-id');
+    });
+
+    it('should reuse one trace id across retries for the same logical request', async () => {
+      const requests: Request[] = [];
+      const responses = [
+        new Response(JSON.stringify({ error: { code: 'UNAVAILABLE', message: 'Try again' } }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ];
+      let generated = 0;
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        trace: {
+          requestId: () => `retry-trace-${++generated}`,
+        },
+        retry: {
+          retries: 1,
+          backoffMs: 0,
+        },
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return responses.shift()!;
+        },
+      });
+
+      await client.health();
+
+      expect(generated).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(requests[0].headers.get('x-prism-request-id')).toBe('retry-trace-1');
+      expect(requests[1].headers.get('x-prism-request-id')).toBe('retry-trace-1');
+    });
+
     it('should retry transient HTTP responses before returning success', async () => {
       const responses = [
         new Response(JSON.stringify({ error: { code: 'UNAVAILABLE', message: 'Try again' } }), {

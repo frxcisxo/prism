@@ -583,9 +583,17 @@ try {
   const routerHealthBody = await routerHealthResponse.json();
   const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
   const openapiBody = await openapiResponse.json();
+  let clientTraceHeader;
   const client = new PrismEdgeClient({
     baseUrl: 'https://prism.local',
-    fetch: (input, init) => gateway.handleRequest(new Request(input, init)),
+    trace: {
+      requestId: 'validation-client-trace-id',
+    },
+    fetch: (input, init) => {
+      const request = new Request(input, init);
+      clientTraceHeader = request.headers.get('x-prism-request-id');
+      return gateway.handleRequest(request);
+    },
   });
   const clientHealth = await client.health();
   const clientOpenAPI = await client.openapi();
@@ -679,6 +687,7 @@ try {
     !health.ok
     || !routerHealthBody.ok
     || routerHealthResponse.headers.get('x-prism-request-id') !== 'validation-trace-id'
+    || clientTraceHeader !== 'validation-client-trace-id'
     || !clientHealth.ok
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'

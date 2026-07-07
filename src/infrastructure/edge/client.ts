@@ -12,6 +12,7 @@ export interface PrismEdgeClientConfig {
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
   timeoutMs?: number;
   retry?: PrismEdgeClientRetryConfig | false;
+  trace?: PrismEdgeClientTraceConfig | false;
   sleep?: (ms: number) => Promise<void>;
   routes?: {
     health?: string;
@@ -28,6 +29,11 @@ export interface PrismEdgeClientRetryConfig {
   maxRetryAfterMs?: number;
   respectRetryAfter?: boolean;
   statuses?: number[];
+}
+
+export interface PrismEdgeClientTraceConfig {
+  header?: string;
+  requestId?: string | (() => string | Promise<string>);
 }
 
 export class PrismEdgeClientError extends Error {
@@ -125,11 +131,12 @@ export class PrismEdgeClient {
 
   private async request(path: string, init: RequestInit): Promise<Response> {
     const retry = this.resolveRetryConfig();
+    const traceId = await this.resolveTraceId();
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= retry.retries; attempt += 1) {
       try {
-        const response = await this.requestOnce(path, init);
+        const response = await this.requestOnce(path, init, traceId);
 
         if (!this.shouldRetryStatus(response.status, retry) || attempt === retry.retries) {
           return response;
@@ -169,8 +176,8 @@ export class PrismEdgeClient {
     );
   }
 
-  private async requestOnce(path: string, init: RequestInit): Promise<Response> {
-    const headers = new Headers(await this.resolveHeaders());
+  private async requestOnce(path: string, init: RequestInit, traceId?: string): Promise<Response> {
+    const headers = new Headers(await this.resolveHeaders(traceId));
 
     if (init.body !== undefined && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
@@ -288,7 +295,7 @@ export class PrismEdgeClient {
     }
   }
 
-  private async resolveHeaders(): Promise<HeadersInit> {
+  private async resolveHeaders(traceId?: string): Promise<HeadersInit> {
     const resolvedHeaders = typeof this.config.headers === 'function'
       ? this.config.headers()
       : this.config.headers ?? {};
@@ -301,7 +308,48 @@ export class PrismEdgeClient {
       headers.set('authorization', `Bearer ${token}`);
     }
 
+    const traceHeader = this.traceHeaderName();
+
+    if (traceId && !headers.has(traceHeader)) {
+      headers.set(traceHeader, traceId);
+    }
+
     return headers;
+  }
+
+  private async resolveTraceId(): Promise<string | undefined> {
+    if (this.config.trace === false || !this.config.trace) {
+      return undefined;
+    }
+
+    const configured = this.config.trace.requestId;
+
+    if (typeof configured === 'function') {
+      const requestId = await configured();
+      return requestId.trim() || undefined;
+    }
+
+    if (typeof configured === 'string') {
+      return configured.trim() || undefined;
+    }
+
+    return this.generateRequestId();
+  }
+
+  private generateRequestId(): string {
+    const cryptoApi = globalThis.crypto;
+
+    if (cryptoApi?.randomUUID) {
+      return cryptoApi.randomUUID();
+    }
+
+    return `prism-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private traceHeaderName(): string {
+    return this.config.trace && this.config.trace.header
+      ? this.config.trace.header.toLowerCase()
+      : 'x-prism-request-id';
   }
 
   private route(name: 'health' | 'infer' | 'metrics' | 'openapi'): string {
