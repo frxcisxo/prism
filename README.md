@@ -4,7 +4,7 @@
 [![CI](https://github.com/frxcisxo/prism/actions/workflows/ci.yml/badge.svg)](https://github.com/frxcisxo/prism/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-243%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-246%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
@@ -323,6 +323,7 @@ const health = await client.health();
 const ready = await client.ready();
 await client.waitUntilReady({ timeoutMs: 30_000, intervalMs: 500 });
 const status = await client.status();
+await client.waitUntilOperational({ timeoutMs: 30_000, intervalMs: 500 });
 const spec = await client.openapi();
 const metrics = await client.metrics();
 const envelope = await client.inferEnvelope({
@@ -342,6 +343,8 @@ Client retries are opt-in and target transient conditions by default: `408`, `42
 Set `idempotency: {}` to send an `Idempotency-Key` header for inference calls. The default key is `InferenceRequest.id`; override `idempotency.key` or `idempotency.header` when a workload has its own operation IDs.
 
 Use `waitUntilReady()` in deploy checks, smoke tests, dashboards, or workers that should wait through temporary `503` readiness states such as initialization or overload. It returns the readiness payload once `ready` is true and throws `PrismEdgeClientError` with `READY_TIMEOUT` if the edge never becomes ready in time.
+
+Use `waitUntilOperational()` after readiness when a deploy gate needs the richer `/status` report to settle. It waits for `healthy` by default, accepts custom states such as `['healthy', 'degraded']`, and throws `PrismEdgeClientError` with `STATUS_TIMEOUT` if PRISM never reaches an accepted operational state.
 
 Set `trace.requestId` to attach `x-prism-request-id` to client calls. Retries reuse the same trace ID for the logical request, so gateway logs and client errors remain correlated.
 
@@ -1319,7 +1322,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 243 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 246 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -1362,7 +1365,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **243 tests passing**:
+Tests are organized by Clean Architecture layers with **246 tests passing**:
 
 ```
 test/

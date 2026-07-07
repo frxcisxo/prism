@@ -1164,6 +1164,56 @@ describe('Edge Adapters', () => {
       return { client, requests };
     }
 
+    function operationalReport(status: 'healthy' | 'degraded' | 'unavailable') {
+      return {
+        generatedAt: Date.now(),
+        service: 'wait-status-gateway',
+        status,
+        summary: `${status} gateway`,
+        readiness: {
+          ok: true,
+          ready: true,
+          service: 'wait-status-gateway',
+          initialized: true,
+          platform: 'cloudflare',
+          modelId: model.id,
+          checks: {
+            initialized: { ok: true },
+            modelDeployed: { ok: true },
+            capacity: { ok: true },
+          },
+          stats: {},
+        },
+        thresholds: {
+          errorRate: 0.05,
+          rateLimitedRate: 0.1,
+          overloadedRate: 0.05,
+          inferP95LatencyMs: 1_000,
+        },
+        traffic: {
+          requests: 1,
+          errorRate: 0,
+          rateLimitedRate: status === 'degraded' ? 0.2 : 0,
+          overloadedRate: 0,
+          averageLatencyMs: 1,
+          inferRequests: 1,
+          inferAverageLatencyMs: 1,
+          inferP95LatencyMs: 5,
+        },
+        checks: {
+          readiness: { ok: true, status: 'pass', message: 'ready' },
+          errors: { ok: true, status: 'pass', message: 'no errors' },
+          rateLimit: {
+            ok: status !== 'degraded',
+            status: status === 'degraded' ? 'warn' : 'pass',
+            message: 'rate limit state',
+          },
+          overload: { ok: true, status: 'pass', message: 'no overload' },
+          latency: { ok: true, status: 'pass', message: 'latency ok' },
+        },
+      };
+    }
+
     it('should read health, readiness, operational status, and OpenAPI from a PRISM edge gateway', async () => {
       const { client, requests } = createClientHarness();
 
@@ -1185,6 +1235,71 @@ describe('Edge Adapters', () => {
       expect(openapi.paths['/api/status'].get.operationId).toBe('getPrismEdgeStatus');
       expect(metrics).toContain('prism_edge_gateway_requests_total');
       expect(requests[0].headers.get('authorization')).toBe('Bearer test-token');
+    });
+
+    it('should wait until operational status becomes acceptable', async () => {
+      const responses = [
+        operationalReport('degraded'),
+        operationalReport('healthy'),
+      ];
+      const delays: number[] = [];
+      const fetchImpl = vi.fn().mockImplementation(async () => new Response(JSON.stringify(responses.shift()), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: fetchImpl,
+        sleep: async ms => {
+          delays.push(ms);
+        },
+      });
+
+      const report = await client.waitUntilOperational({
+        timeoutMs: 1_000,
+        intervalMs: 50,
+      });
+
+      expect(report.status).toBe('healthy');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(delays).toEqual([50]);
+    });
+
+    it('should allow deploy gates to accept degraded operational status explicitly', async () => {
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: async () => new Response(JSON.stringify(operationalReport('degraded')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      });
+
+      const report = await client.waitUntilOperational({
+        timeoutMs: 0,
+        intervalMs: 0,
+        acceptedStatuses: ['healthy', 'degraded'],
+      });
+
+      expect(report.status).toBe('degraded');
+    });
+
+    it('should time out while waiting for operational status', async () => {
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: async () => new Response(JSON.stringify(operationalReport('degraded')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      });
+
+      await expect(client.waitUntilOperational({
+        timeoutMs: 0,
+        intervalMs: 0,
+      })).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        code: 'STATUS_TIMEOUT',
+        response: { status: 'degraded' },
+      } satisfies Partial<PrismEdgeClientError>);
     });
 
     it('should wait until readiness recovers from temporary 503 responses', async () => {

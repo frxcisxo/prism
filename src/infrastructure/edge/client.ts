@@ -4,6 +4,7 @@ import type {
   PrismEdgeGatewayHealth,
   PrismEdgeGatewayOpenAPISpec,
   PrismEdgeGatewayOperationalReport,
+  PrismEdgeGatewayOperationalStatus,
   PrismEdgeGatewayReadiness,
 } from './gateway';
 
@@ -50,6 +51,13 @@ export interface PrismEdgeClientWaitUntilReadyConfig {
   timeoutMs?: number;
   intervalMs?: number;
   signal?: AbortSignal;
+}
+
+export interface PrismEdgeClientWaitUntilOperationalConfig {
+  timeoutMs?: number;
+  intervalMs?: number;
+  signal?: AbortSignal;
+  acceptedStatuses?: PrismEdgeGatewayOperationalStatus[];
 }
 
 export type PrismEdgeInferenceEnvelope = EdgeResponse<InferenceResult> & {
@@ -155,6 +163,57 @@ export class PrismEdgeClient {
 
   async status(): Promise<PrismEdgeGatewayOperationalReport> {
     return this.getJson<PrismEdgeGatewayOperationalReport>(this.route('status'));
+  }
+
+  async waitUntilOperational(
+    options: PrismEdgeClientWaitUntilOperationalConfig = {}
+  ): Promise<PrismEdgeGatewayOperationalReport> {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 30_000);
+    const intervalMs = Math.max(0, options.intervalMs ?? 500);
+    const acceptedStatuses = options.acceptedStatuses && options.acceptedStatuses.length > 0
+      ? options.acceptedStatuses
+      : ['healthy' as const];
+    const startedAt = Date.now();
+    let lastError: unknown;
+
+    while (Date.now() - startedAt <= timeoutMs) {
+      if (options.signal?.aborted) {
+        throw new PrismEdgeClientError(
+          'PRISM edge operational wait was aborted',
+          0,
+          'ABORTED',
+          lastError
+        );
+      }
+
+      try {
+        const report = await this.status();
+
+        if (acceptedStatuses.includes(report.status)) {
+          return report;
+        }
+
+        lastError = report;
+      } catch (error) {
+        lastError = error;
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      const remainingMs = timeoutMs - elapsedMs;
+
+      if (remainingMs <= 0) {
+        break;
+      }
+
+      await this.sleep(Math.min(intervalMs, remainingMs));
+    }
+
+    throw new PrismEdgeClientError(
+      `PRISM edge did not reach operational status ${acceptedStatuses.join(', ')} within ${timeoutMs}ms`,
+      0,
+      'STATUS_TIMEOUT',
+      lastError
+    );
   }
 
   async metrics(): Promise<string> {

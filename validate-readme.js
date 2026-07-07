@@ -610,6 +610,10 @@ try {
     intervalMs: 0,
   });
   const clientStatus = await client.status();
+  const clientWaitOperational = await client.waitUntilOperational({
+    timeoutMs: 1_000,
+    intervalMs: 0,
+  });
   const clientOpenAPI = await client.openapi();
   const clientMetrics = await client.metrics();
   const clientEnvelope = await client.inferEnvelope({
@@ -810,6 +814,7 @@ try {
     || clientReadiness.ready !== true
     || clientWaitReadiness.ready !== true
     || clientStatus.status !== 'healthy'
+    || clientWaitOperational.status !== 'healthy'
     || clientEnvelope.success !== true
     || clientEnvelope.cached !== false
     || clientEnvelope.requestId !== 'validation-client-trace-id'
