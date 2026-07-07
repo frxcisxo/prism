@@ -376,34 +376,46 @@ describe('Edge Adapters', () => {
       expect(body.data.edgeId).toBe('cloudflare-dfw');
     });
 
-    it('should serve health, inference, CORS preflight, and not-found through the HTTP router', async () => {
+    it('should serve health, inference, OpenAPI, CORS preflight, and not-found through the HTTP router', async () => {
       const gateway = new PrismEdgeGateway({
         nodeId: 'router-gateway-node',
         platform: 'cloudflare',
         region: 'iad',
         model,
         cors: true,
+        openapi: {
+          title: 'Router Gateway API',
+          version: '2026.7.6',
+        },
       });
 
       const health = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const openapi = await gateway.handleRequest(new Request('https://edge.test/openapi.json'));
       const preflight = await gateway.handleRequest(new Request('https://edge.test/infer', {
         method: 'OPTIONS',
       }));
       const inference = await gateway.handleRequest(inferenceRequest('router-1', 'Route through router.'));
       const notFound = await gateway.handleRequest(new Request('https://edge.test/missing'));
       const healthBody = await health.json();
+      const openapiBody = await openapi.json();
       const preflightBody = await preflight.json();
       const inferenceBody = await inference.json();
       const notFoundBody = await notFound.json();
 
       expect(health.status).toBe(200);
       expect(healthBody.ok).toBe(true);
+      expect(openapi.status).toBe(200);
+      expect(openapiBody.openapi).toBe('3.1.0');
+      expect(openapiBody.info.title).toBe('Router Gateway API');
+      expect(openapiBody.paths['/health'].get.operationId).toBe('getPrismEdgeHealth');
+      expect(openapiBody.paths['/infer'].post.operationId).toBe('runPrismEdgeInference');
+      expect(openapiBody.components.schemas.InferenceRequest.properties.modelId.const).toBe(model.id);
       expect(preflight.status).toBe(200);
       expect(preflightBody.ok).toBe(true);
       expect(inference.status).toBe(200);
       expect(inferenceBody.success).toBe(true);
       expect(notFound.status).toBe(404);
-      expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer']);
+      expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer', 'GET /openapi.json']);
       expect(inference.headers.get('access-control-allow-origin')).toBe('*');
       expect(health.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
     });
@@ -416,25 +428,47 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/ready',
           infer: '/api/prism',
+          openapi: '/api/openapi.json',
           rootHealth: false,
         },
       });
 
       const root = await gateway.handleRequest(new Request('https://edge.test/'));
       const health = await gateway.handleRequest(new Request('https://edge.test/api/ready'));
+      const openapi = await gateway.handleRequest(new Request('https://edge.test/api/openapi.json'));
       const inference = await gateway.handleRequest(new Request('https://edge.test/api/prism', {
         method: 'POST',
         body: JSON.stringify({ id: 'custom-route-1', modelId: model.id, input: 'Use custom route.' }),
       }));
       const rootBody = await root.json();
       const healthBody = await health.json();
+      const openapiBody = await openapi.json();
       const inferenceBody = await inference.json();
 
       expect(root.status).toBe(404);
-      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'POST /api/prism']);
+      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'POST /api/prism', 'GET /api/openapi.json']);
       expect(healthBody.ok).toBe(true);
+      expect(openapiBody.paths['/api/ready']).toBeDefined();
+      expect(openapiBody.paths['/api/prism']).toBeDefined();
       expect(inference.status).toBe(200);
       expect(inferenceBody.success).toBe(true);
+    });
+
+    it('should allow disabling the OpenAPI route', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'no-openapi-gateway-node',
+        platform: 'netlify',
+        model,
+        openapi: false,
+      });
+
+      const response = await gateway.handleRequest(new Request('https://edge.test/openapi.json'));
+      const body = await response.json();
+      const spec = gateway.getOpenAPISpec();
+
+      expect(response.status).toBe(404);
+      expect(body.endpoints).toEqual(['GET /health', 'POST /infer']);
+      expect(spec.paths['/openapi.json']).toBeUndefined();
     });
   });
 });

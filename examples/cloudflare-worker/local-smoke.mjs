@@ -63,6 +63,12 @@ assert(health.ok === true, 'health endpoint did not report ok');
 assert(health.stats.models === 1, 'health endpoint did not initialize the PRISM model registry');
 console.log('OK health endpoint initializes PRISM');
 
+const openapi = await worker.fetch(request('/openapi.json'), env).then(response => response.json());
+assert(openapi.openapi === '3.1.0', 'OpenAPI endpoint did not return an OpenAPI 3.1 document');
+assert(openapi.paths['/infer'].post.operationId === 'runPrismEdgeInference', 'OpenAPI endpoint did not describe inference route');
+assert(openapi.components.schemas.InferenceRequest.properties.modelId.const === 'edge-triage-small', 'OpenAPI endpoint did not bind the gateway model id');
+console.log('OK OpenAPI endpoint describes the Worker contract');
+
 const first = await postInfer('cfw-1', 'Prioritize an urgent store shelf anomaly at the edge.');
 assert(first.status === 200, 'first inference did not return HTTP 200');
 assert(first.body.success === true, 'first inference did not return an edge success envelope');

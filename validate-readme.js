@@ -579,10 +579,15 @@ try {
   const repeatGatewayBody = await repeatGatewayResponse.json();
   const routerHealthResponse = await gateway.handleRequest(new Request('https://prism.local/health'));
   const routerHealthBody = await routerHealthResponse.json();
+  const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
+  const openapiBody = await openapiResponse.json();
 
   if (
     !health.ok
     || !routerHealthBody.ok
+    || openapiBody.openapi !== '3.1.0'
+    || !openapiBody.paths['/infer']?.post
+    || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
     || firstGatewayBody.data.output.region !== 'validation'
