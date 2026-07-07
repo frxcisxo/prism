@@ -81,8 +81,10 @@ console.log('OK readiness endpoint verifies deployable traffic state');
 const openapi = await worker.fetch(request('/openapi.json'), env).then(response => response.json());
 assert(openapi.openapi === '3.1.0', 'OpenAPI endpoint did not return an OpenAPI 3.1 document');
 assert(openapi.paths['/ready'].get.operationId === 'getPrismEdgeReadiness', 'OpenAPI endpoint did not describe readiness route');
+assert(openapi.paths['/status'].get.operationId === 'getPrismEdgeStatus', 'OpenAPI endpoint did not describe operational status route');
 assert(openapi.paths['/infer'].post.operationId === 'runPrismEdgeInference', 'OpenAPI endpoint did not describe inference route');
 assert(openapi.paths['/infer'].post.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark inference as bearer-protected');
+assert(openapi.paths['/status'].get.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark status as bearer-protected');
 assert(openapi.paths['/metrics'].get.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark metrics as bearer-protected');
 assert(openapi.components.schemas.InferenceRequest.properties.modelId.const === 'edge-triage-small', 'OpenAPI endpoint did not bind the gateway model id');
 console.log('OK OpenAPI endpoint describes the Worker contract');
@@ -119,13 +121,22 @@ assert(limited.status === 429, 'rate-limited inference did not return HTTP 429')
 assert(limited.body.error.code === 'RATE_LIMITED', 'rate-limited inference did not expose RATE_LIMITED code');
 console.log('OK rate limit rejects excess inference traffic');
 
+const deniedStatus = await worker.fetch(request('/status'), env);
+assert(deniedStatus.status === 401, 'protected status did not reject a missing bearer token');
+const status = await worker.fetch(request('/status', {
+  headers: { authorization: 'Bearer local-worker-token' },
+}), env).then(response => response.json());
+assert(status.status === 'degraded', 'status endpoint did not expose degraded operational state after rate limiting');
+assert(status.checks.readiness.status === 'pass', 'status endpoint did not include readiness diagnostics');
+console.log('OK protected status exposes operational diagnostics');
+
 const deniedMetrics = await worker.fetch(request('/metrics'), env);
 assert(deniedMetrics.status === 401, 'protected metrics did not reject a missing bearer token');
 const metrics = await worker.fetch(request('/metrics', {
   headers: { authorization: 'Bearer local-worker-token' },
 }), env).then(response => response.text());
 assert(metrics.includes('prism_edge_gateway_requests_total'), 'metrics endpoint did not expose gateway request counter');
-assert(metrics.includes('prism_edge_gateway_unauthorized_total 2'), 'metrics endpoint did not count unauthorized inference and metrics calls');
+assert(metrics.includes('prism_edge_gateway_unauthorized_total 3'), 'metrics endpoint did not count unauthorized inference, status, and metrics calls');
 assert(metrics.includes('prism_edge_gateway_rate_limited_total 1'), 'metrics endpoint did not count rate-limited inference');
 assert(metrics.includes('prism_edge_gateway_max_concurrent_inference 2'), 'metrics endpoint did not expose overload concurrency limit');
 console.log('OK protected metrics expose operational counters');

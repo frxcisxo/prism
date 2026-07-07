@@ -153,7 +153,7 @@ The demos run against PRISM's compiled package. In a local checkout, run `npm ru
 
 `npm run demo:onnx` executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
 
-`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node through `PrismEdgeGateway`, deploys `edge-triage-small`, verifies `GET /ready` before traffic, handles protected `POST /infer` traffic through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, rejects invalid requests with safe validation errors, enforces a local rate limit, and exposes protected Prometheus gateway metrics.
+`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node through `PrismEdgeGateway`, deploys `edge-triage-small`, verifies `GET /ready` before traffic, handles protected `POST /infer` traffic through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, rejects invalid requests with safe validation errors, enforces a local rate limit, and exposes protected operational status plus Prometheus gateway metrics.
 
 `npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI includes retail, industrial, clinic, and logistics presets, then calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, resilient runtime fallback health, alert summaries, a Prometheus metrics preview, and verified shard assembly.
 
@@ -172,13 +172,14 @@ To adapt it for Cloudflare, bind a KV namespace as `PRISM_CACHE` and point Worke
 
 - `GET /health` for liveness, node metadata, and CRDT stats
 - `GET /ready` for deploy/load-balancer traffic gates after model deployment
+- `GET /status` for operational dashboards, smoke tests, and deploy diagnostics
 - `POST /infer` for PRISM inference envelopes
 - `GET /metrics` for Prometheus-compatible gateway counters
 
 Useful Worker environment variables:
 
-- `PRISM_EDGE_TOKEN`: enables bearer auth. By default it protects `/infer` and `/metrics`.
-- `PRISM_PROTECTED_ROUTES`: comma-separated protected routes, for example `infer,metrics,openapi`.
+- `PRISM_EDGE_TOKEN`: enables bearer auth. By default it protects `/infer`, `/status`, and `/metrics`.
+- `PRISM_PROTECTED_ROUTES`: comma-separated protected routes, for example `infer,status,metrics,openapi`.
 - `PRISM_RATE_LIMIT`: enables fixed-window request limiting.
 - `PRISM_RATE_WINDOW_MS`: rate-limit window in milliseconds, default `60000`.
 - `PRISM_RATE_LIMIT_ROUTES`: comma-separated limited routes, default `infer`.
@@ -202,7 +203,7 @@ Example request body:
 
 ### PrismEdgeGateway
 
-Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health and readiness probes, route `POST /infer` through the right edge adapter, publish `/openapi.json`, emit Prometheus-ready `/metrics`, handle CORS/preflight/404 responses, and share an edge cache across requests.
+Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, readiness, and operational status probes, route `POST /infer` through the right edge adapter, publish `/openapi.json`, emit Prometheus-ready `/metrics`, handle CORS/preflight/404 responses, and share an edge cache across requests.
 
 ```typescript
 import { PrismEdgeGateway } from '@frxncisxo/prism/edge';
@@ -216,7 +217,7 @@ const gateway = new PrismEdgeGateway({
   cors: true,
   auth: {
     bearerToken: process.env.PRISM_EDGE_TOKEN!,
-    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/ready/openapi/metrics.
+    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/ready/status/openapi/metrics.
   },
   rateLimit: {
     limit: 120,
@@ -271,6 +272,7 @@ Default gateway endpoints:
 
 - `GET /health`
 - `GET /ready`
+- `GET /status`
 - `GET /openapi.json`
 - `GET /metrics`
 - `POST /infer`
@@ -284,6 +286,8 @@ Enable `idempotency` when clients may retry inference after network failures or 
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, latency samples, and Prometheus histograms through `prism_edge_gateway_request_duration_ms_bucket` for SLO dashboards.
 
 `gateway.getOperationalReport()` combines readiness and metrics into a compact `healthy`, `degraded`, or `unavailable` report with checks for readiness, error rate, rate limiting, overload, and inferred p95 latency. Use it for dashboards, smoke tests, deploy gates, or lightweight support diagnostics.
+
+`GET /status` and `client.status()` expose the same operational report over HTTP, so external dashboards, CI deploy gates, Workers, and support tools can verify PRISM without importing gateway internals.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
 
@@ -316,6 +320,7 @@ const client = new PrismEdgeClient({
 const health = await client.health();
 const ready = await client.ready();
 await client.waitUntilReady({ timeoutMs: 30_000, intervalMs: 500 });
+const status = await client.status();
 const spec = await client.openapi();
 const metrics = await client.metrics();
 const envelope = await client.inferEnvelope({

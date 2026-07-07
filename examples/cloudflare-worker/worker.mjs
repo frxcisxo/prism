@@ -46,7 +46,7 @@ function createAuth(env = {}) {
 
   return {
     bearerToken: String(env.PRISM_EDGE_TOKEN),
-    protectedRoutes: envList(env.PRISM_PROTECTED_ROUTES, ['infer', 'metrics']),
+    protectedRoutes: envList(env.PRISM_PROTECTED_ROUTES, ['infer', 'metrics', 'status']),
   };
 }
 

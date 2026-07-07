@@ -3,6 +3,7 @@ import type { EdgeResponse } from './edge';
 import type {
   PrismEdgeGatewayHealth,
   PrismEdgeGatewayOpenAPISpec,
+  PrismEdgeGatewayOperationalReport,
   PrismEdgeGatewayReadiness,
 } from './gateway';
 
@@ -19,6 +20,7 @@ export interface PrismEdgeClientConfig {
   routes?: {
     health?: string;
     ready?: string;
+    status?: string;
     infer?: string;
     metrics?: string;
     openapi?: string;
@@ -149,6 +151,10 @@ export class PrismEdgeClient {
 
   async openapi(): Promise<PrismEdgeGatewayOpenAPISpec> {
     return this.getJson<PrismEdgeGatewayOpenAPISpec>(this.route('openapi'));
+  }
+
+  async status(): Promise<PrismEdgeGatewayOperationalReport> {
+    return this.getJson<PrismEdgeGatewayOperationalReport>(this.route('status'));
   }
 
   async metrics(): Promise<string> {
@@ -505,10 +511,11 @@ export class PrismEdgeClient {
     );
   }
 
-  private route(name: 'health' | 'ready' | 'infer' | 'metrics' | 'openapi'): string {
+  private route(name: 'health' | 'ready' | 'status' | 'infer' | 'metrics' | 'openapi'): string {
     const defaults = {
       health: '/health',
       ready: '/ready',
+      status: '/status',
       infer: '/infer',
       metrics: '/metrics',
       openapi: '/openapi.json',

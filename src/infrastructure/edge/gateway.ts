@@ -22,6 +22,7 @@ export interface PrismEdgeGatewayHealth {
     infer: 'POST /infer';
     health: 'GET /health';
     ready: 'GET /ready';
+    status: 'GET /status';
     metrics: 'GET /metrics';
   };
 }
@@ -53,6 +54,7 @@ export interface PrismEdgeGatewayReadiness {
 export interface PrismEdgeGatewayRoutes {
   health?: string;
   ready?: string;
+  status?: string;
   infer?: string;
   openapi?: string;
   metrics?: string;
@@ -85,7 +87,7 @@ export interface PrismEdgeGatewayOpenAPISpec {
   };
 }
 
-export type PrismEdgeGatewayRouteName = 'health' | 'ready' | 'infer' | 'openapi' | 'metrics';
+export type PrismEdgeGatewayRouteName = 'health' | 'ready' | 'status' | 'infer' | 'openapi' | 'metrics';
 export type PrismEdgeGatewayObservedRouteName = PrismEdgeGatewayRouteName | 'preflight' | 'notFound';
 
 export interface PrismEdgeGatewayRouteMetrics {
@@ -347,6 +349,26 @@ export class PrismEdgeGateway {
       );
     }
 
+    if (request.method === 'GET' && url.pathname === routes.status) {
+      const unauthorized = await this.unauthorizedResponse(request, 'status');
+      if (unauthorized) {
+        return this.recordResponse(request, 'status', startedAt, unauthorized, requestId);
+      }
+
+      const limited = this.rateLimitResponse(request, 'status');
+      if (limited) {
+        return this.recordResponse(request, 'status', startedAt, limited, requestId);
+      }
+
+      return this.recordResponse(
+        request,
+        'status',
+        startedAt,
+        this.jsonResponse(await this.getOperationalReport()),
+        requestId
+      );
+    }
+
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
       const unauthorized = await this.unauthorizedResponse(request, 'openapi');
       if (unauthorized) {
@@ -409,6 +431,7 @@ export class PrismEdgeGateway {
         infer: 'POST /infer',
         health: 'GET /health',
         ready: 'GET /ready',
+        status: 'GET /status',
         metrics: 'GET /metrics',
       },
     };
@@ -642,6 +665,23 @@ export class PrismEdgeGateway {
             },
           },
         },
+        [routes.status]: {
+          get: {
+            summary: 'Read PRISM edge gateway operational status',
+            operationId: 'getPrismEdgeStatus',
+            ...(this.openapiSecurity('status')),
+            responses: {
+              '200': {
+                description: 'Gateway operational report for dashboards, deploy gates, and support diagnostics',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/PrismEdgeGatewayOperationalReport' },
+                  },
+                },
+              },
+            },
+          },
+        },
         [routes.infer]: {
           post: {
             summary: 'Run PRISM edge inference',
@@ -833,6 +873,39 @@ export class PrismEdgeGateway {
               stats: { type: 'object', additionalProperties: true },
             },
           },
+          PrismEdgeGatewayOperationalReport: {
+            type: 'object',
+            required: ['generatedAt', 'service', 'status', 'summary', 'readiness', 'thresholds', 'traffic', 'checks'],
+            properties: {
+              generatedAt: { type: 'number' },
+              service: { type: 'string' },
+              status: { type: 'string', enum: ['healthy', 'degraded', 'unavailable'] },
+              summary: { type: 'string' },
+              readiness: { $ref: '#/components/schemas/PrismEdgeGatewayReadiness' },
+              thresholds: { type: 'object', additionalProperties: { type: 'number' } },
+              traffic: { type: 'object', additionalProperties: { type: 'number' } },
+              checks: {
+                type: 'object',
+                required: ['readiness', 'errors', 'rateLimit', 'overload', 'latency'],
+                properties: {
+                  readiness: { $ref: '#/components/schemas/OperationalCheck' },
+                  errors: { $ref: '#/components/schemas/OperationalCheck' },
+                  rateLimit: { $ref: '#/components/schemas/OperationalCheck' },
+                  overload: { $ref: '#/components/schemas/OperationalCheck' },
+                  latency: { $ref: '#/components/schemas/OperationalCheck' },
+                },
+              },
+            },
+          },
+          OperationalCheck: {
+            type: 'object',
+            required: ['ok', 'status', 'message'],
+            properties: {
+              ok: { type: 'boolean' },
+              status: { type: 'string', enum: ['pass', 'warn', 'fail'] },
+              message: { type: 'string' },
+            },
+          },
           ReadinessCheck: {
             type: 'object',
             required: ['ok'],
@@ -903,6 +976,7 @@ export class PrismEdgeGateway {
     return {
       health: this.config.routes?.health ?? '/health',
       ready: this.config.routes?.ready ?? '/ready',
+      status: this.config.routes?.status ?? '/status',
       infer: this.config.routes?.infer ?? '/infer',
       openapi: this.config.routes?.openapi ?? '/openapi.json',
       metrics: this.config.routes?.metrics ?? '/metrics',
@@ -911,7 +985,7 @@ export class PrismEdgeGateway {
   }
 
   private routeList(routes: Required<PrismEdgeGatewayRoutes>): string[] {
-    const endpoints = [`GET ${routes.health}`, `GET ${routes.ready}`, `POST ${routes.infer}`];
+    const endpoints = [`GET ${routes.health}`, `GET ${routes.ready}`, `GET ${routes.status}`, `POST ${routes.infer}`];
 
     if (this.config.openapi !== false) {
       endpoints.push(`GET ${routes.openapi}`);
@@ -1301,6 +1375,7 @@ export class PrismEdgeGateway {
       routes: {
         health: this.emptyRouteMetrics(),
         ready: this.emptyRouteMetrics(),
+        status: this.emptyRouteMetrics(),
         infer: this.emptyRouteMetrics(),
         openapi: this.emptyRouteMetrics(),
         metrics: this.emptyRouteMetrics(),

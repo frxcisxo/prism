@@ -316,6 +316,7 @@ describe('Edge Adapters', () => {
         infer: 'POST /infer',
         health: 'GET /health',
         ready: 'GET /ready',
+        status: 'GET /status',
         metrics: 'GET /metrics',
       });
     });
@@ -422,6 +423,7 @@ describe('Edge Adapters', () => {
 
       const health = await gateway.handleRequest(new Request('https://edge.test/health'));
       const ready = await gateway.handleRequest(new Request('https://edge.test/ready'));
+      const status = await gateway.handleRequest(new Request('https://edge.test/status'));
       const openapi = await gateway.handleRequest(new Request('https://edge.test/openapi.json'));
       const preflight = await gateway.handleRequest(new Request('https://edge.test/infer', {
         method: 'OPTIONS',
@@ -430,6 +432,7 @@ describe('Edge Adapters', () => {
       const notFound = await gateway.handleRequest(new Request('https://edge.test/missing'));
       const healthBody = await health.json();
       const readyBody = await ready.json();
+      const statusBody = await status.json();
       const openapiBody = await openapi.json();
       const preflightBody = await preflight.json();
       const inferenceBody = await inference.json();
@@ -439,19 +442,24 @@ describe('Edge Adapters', () => {
       expect(healthBody.ok).toBe(true);
       expect(ready.status).toBe(200);
       expect(readyBody.ready).toBe(true);
+      expect(status.status).toBe(200);
+      expect(statusBody.status).toBe('healthy');
+      expect(statusBody.checks.readiness.status).toBe('pass');
       expect(openapi.status).toBe(200);
       expect(openapiBody.openapi).toBe('3.1.0');
       expect(openapiBody.info.title).toBe('Router Gateway API');
       expect(openapiBody.paths['/health'].get.operationId).toBe('getPrismEdgeHealth');
       expect(openapiBody.paths['/ready'].get.operationId).toBe('getPrismEdgeReadiness');
+      expect(openapiBody.paths['/status'].get.operationId).toBe('getPrismEdgeStatus');
       expect(openapiBody.paths['/infer'].post.operationId).toBe('runPrismEdgeInference');
+      expect(openapiBody.components.schemas.PrismEdgeGatewayOperationalReport).toBeDefined();
       expect(openapiBody.components.schemas.InferenceRequest.properties.modelId.const).toBe(model.id);
       expect(preflight.status).toBe(200);
       expect(preflightBody.ok).toBe(true);
       expect(inference.status).toBe(200);
       expect(inferenceBody.success).toBe(true);
       expect(notFound.status).toBe(404);
-      expect(notFoundBody.endpoints).toEqual(['GET /health', 'GET /ready', 'POST /infer', 'GET /openapi.json', 'GET /metrics']);
+      expect(notFoundBody.endpoints).toEqual(['GET /health', 'GET /ready', 'GET /status', 'POST /infer', 'GET /openapi.json', 'GET /metrics']);
       expect(inference.headers.get('access-control-allow-origin')).toBe('*');
       expect(health.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
       expect(health.headers.get('x-prism-request-id')).toBeTruthy();
@@ -600,6 +608,7 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/ready',
           ready: '/api/traffic-ready',
+          status: '/api/status',
           infer: '/api/prism',
           openapi: '/api/openapi.json',
           rootHealth: false,
@@ -609,6 +618,7 @@ describe('Edge Adapters', () => {
       const root = await gateway.handleRequest(new Request('https://edge.test/'));
       const health = await gateway.handleRequest(new Request('https://edge.test/api/ready'));
       const ready = await gateway.handleRequest(new Request('https://edge.test/api/traffic-ready'));
+      const status = await gateway.handleRequest(new Request('https://edge.test/api/status'));
       const openapi = await gateway.handleRequest(new Request('https://edge.test/api/openapi.json'));
       const inference = await gateway.handleRequest(new Request('https://edge.test/api/prism', {
         method: 'POST',
@@ -617,15 +627,18 @@ describe('Edge Adapters', () => {
       const rootBody = await root.json();
       const healthBody = await health.json();
       const readyBody = await ready.json();
+      const statusBody = await status.json();
       const openapiBody = await openapi.json();
       const inferenceBody = await inference.json();
 
       expect(root.status).toBe(404);
-      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'GET /api/traffic-ready', 'POST /api/prism', 'GET /api/openapi.json', 'GET /metrics']);
+      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'GET /api/traffic-ready', 'GET /api/status', 'POST /api/prism', 'GET /api/openapi.json', 'GET /metrics']);
       expect(healthBody.ok).toBe(true);
       expect(readyBody.ready).toBe(true);
+      expect(statusBody.status).toBe('healthy');
       expect(openapiBody.paths['/api/ready']).toBeDefined();
       expect(openapiBody.paths['/api/traffic-ready']).toBeDefined();
+      expect(openapiBody.paths['/api/status']).toBeDefined();
       expect(openapiBody.paths['/api/prism']).toBeDefined();
       expect(inference.status).toBe(200);
       expect(inferenceBody.success).toBe(true);
@@ -644,7 +657,7 @@ describe('Edge Adapters', () => {
       const spec = gateway.getOpenAPISpec();
 
       expect(response.status).toBe(404);
-      expect(body.endpoints).toEqual(['GET /health', 'GET /ready', 'POST /infer', 'GET /metrics']);
+      expect(body.endpoints).toEqual(['GET /health', 'GET /ready', 'GET /status', 'POST /infer', 'GET /metrics']);
       expect(spec.paths['/openapi.json']).toBeUndefined();
     });
 
@@ -704,6 +717,30 @@ describe('Edge Adapters', () => {
       expect(denied.status).toBe(401);
       expect(allowed.status).toBe(200);
       expect(openapi.paths['/metrics'].get.security).toEqual([{ bearerAuth: [] }]);
+    });
+
+    it('should allow protecting the operational status route with bearer auth', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'auth-status-gateway-node',
+        platform: 'cloudflare',
+        model,
+        auth: {
+          bearerToken: 'status-secret',
+          protectedRoutes: ['status'],
+        },
+      });
+
+      const denied = await gateway.handleRequest(new Request('https://edge.test/status'));
+      const allowed = await gateway.handleRequest(new Request('https://edge.test/status', {
+        headers: { authorization: 'Bearer status-secret' },
+      }));
+      const body = await allowed.json();
+      const openapi = gateway.getOpenAPISpec();
+
+      expect(denied.status).toBe(401);
+      expect(allowed.status).toBe(200);
+      expect(body.status).toBe('healthy');
+      expect(openapi.paths['/status'].get.security).toEqual([{ bearerAuth: [] }]);
     });
 
     it('should allow protecting readiness with bearer auth', async () => {
@@ -1075,6 +1112,7 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/health',
           ready: '/api/ready',
+          status: '/api/status',
           infer: '/api/infer',
           metrics: '/api/metrics',
           openapi: '/api/openapi.json',
@@ -1086,6 +1124,7 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/health',
           ready: '/api/ready',
+          status: '/api/status',
           infer: '/api/infer',
           metrics: '/api/metrics',
           openapi: '/api/openapi.json',
@@ -1125,21 +1164,25 @@ describe('Edge Adapters', () => {
       return { client, requests };
     }
 
-    it('should read health, readiness, and OpenAPI from a PRISM edge gateway', async () => {
+    it('should read health, readiness, operational status, and OpenAPI from a PRISM edge gateway', async () => {
       const { client, requests } = createClientHarness();
 
       const health = await client.health();
       const ready = await client.ready();
+      const status = await client.status();
       const openapi = await client.openapi();
       const metrics = await client.metrics();
 
       expect(health.ok).toBe(true);
       expect(ready.ready).toBe(true);
       expect(ready.checks.modelDeployed.ok).toBe(true);
+      expect(status.status).toBe('healthy');
+      expect(status.traffic.requests).toBeGreaterThanOrEqual(2);
       expect(health.model.id).toBe(model.id);
       expect(openapi.openapi).toBe('3.1.0');
       expect(openapi.paths['/api/infer'].post.operationId).toBe('runPrismEdgeInference');
       expect(openapi.paths['/api/ready'].get.operationId).toBe('getPrismEdgeReadiness');
+      expect(openapi.paths['/api/status'].get.operationId).toBe('getPrismEdgeStatus');
       expect(metrics).toContain('prism_edge_gateway_requests_total');
       expect(requests[0].headers.get('authorization')).toBe('Bearer test-token');
     });

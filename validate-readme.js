@@ -587,6 +587,8 @@ try {
   const routerHealthBody = await routerHealthResponse.json();
   const readinessResponse = await gateway.handleRequest(new Request('https://prism.local/ready'));
   const readinessBody = await readinessResponse.json();
+  const statusResponse = await gateway.handleRequest(new Request('https://prism.local/status'));
+  const statusBody = await statusResponse.json();
   const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
   const openapiBody = await openapiResponse.json();
   let clientTraceHeader;
@@ -607,6 +609,7 @@ try {
     timeoutMs: 1_000,
     intervalMs: 0,
   });
+  const clientStatus = await client.status();
   const clientOpenAPI = await client.openapi();
   const clientMetrics = await client.metrics();
   const clientEnvelope = await client.inferEnvelope({
@@ -796,6 +799,9 @@ try {
     || readinessResponse.status !== 200
     || readinessBody.ready !== true
     || readinessBody.checks.modelDeployed.ok !== true
+    || statusResponse.status !== 200
+    || statusBody.status !== 'healthy'
+    || statusBody.checks.readiness.status !== 'pass'
     || routerHealthResponse.headers.get('x-prism-request-id') !== 'validation-trace-id'
     || clientTraceHeader !== 'validation-client-trace-id'
     || !gatewayEvents.some(event => event.route === 'health' && event.requestId === 'validation-trace-id')
@@ -803,6 +809,7 @@ try {
     || !clientHealth.ok
     || clientReadiness.ready !== true
     || clientWaitReadiness.ready !== true
+    || clientStatus.status !== 'healthy'
     || clientEnvelope.success !== true
     || clientEnvelope.cached !== false
     || clientEnvelope.requestId !== 'validation-client-trace-id'
@@ -811,6 +818,7 @@ try {
     || clientOpenAPI.openapi !== '3.1.0'
     || !openapiBody.paths['/infer']?.post
     || !openapiBody.paths['/ready']?.get
+    || !openapiBody.paths['/status']?.get
     || !openapiBody.paths['/metrics']?.get
     || !clientMetrics.includes('prism_edge_gateway_requests_total')
     || !clientMetrics.includes('prism_edge_gateway_request_duration_ms_bucket')
