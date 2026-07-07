@@ -153,7 +153,7 @@ The demos run against PRISM's compiled package. In a local checkout, run `npm ru
 
 `npm run demo:onnx` executes a real ONNX fixture through `onnxruntime-web`, including SHA-256 and size verification before the model session is created.
 
-`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node through `PrismEdgeGateway`, deploys `edge-triage-small`, handles protected `POST /infer` traffic through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, rejects invalid requests with safe validation errors, enforces a local rate limit, and exposes protected Prometheus gateway metrics.
+`npm run example:cloudflare` runs a local smoke test for the Cloudflare Worker example in `examples/cloudflare-worker/worker.mjs`. It initializes a PRISM edge node through `PrismEdgeGateway`, deploys `edge-triage-small`, verifies `GET /ready` before traffic, handles protected `POST /infer` traffic through `CloudflareEdgeAdapter`, verifies Cloudflare KV-compatible cache hits, rejects invalid requests with safe validation errors, enforces a local rate limit, and exposes protected Prometheus gateway metrics.
 
 `npm run example:visual` starts a local visual console at `http://127.0.0.1:5177/`. The browser UI includes retail, industrial, clinic, and logistics presets, then calls a small local Node server that uses PRISM's compiled package: CRDT node registration, model deployment, CRDT merge, edge adapter response shaping, cache hits, runtime diagnostics, resilient runtime fallback health, alert summaries, a Prometheus metrics preview, and verified shard assembly.
 
@@ -170,7 +170,8 @@ npm run example:cloudflare
 
 To adapt it for Cloudflare, bind a KV namespace as `PRISM_CACHE` and point Worker traffic at:
 
-- `GET /health` for model and node readiness
+- `GET /health` for liveness, node metadata, and CRDT stats
+- `GET /ready` for deploy/load-balancer traffic gates after model deployment
 - `POST /infer` for PRISM inference envelopes
 - `GET /metrics` for Prometheus-compatible gateway counters
 
@@ -196,7 +197,7 @@ Example request body:
 
 ### PrismEdgeGateway
 
-Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, publish `/openapi.json`, emit Prometheus-ready `/metrics`, handle CORS/preflight/404 responses, and share an edge cache across requests.
+Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health and readiness probes, route `POST /infer` through the right edge adapter, publish `/openapi.json`, emit Prometheus-ready `/metrics`, handle CORS/preflight/404 responses, and share an edge cache across requests.
 
 ```typescript
 import { PrismEdgeGateway } from '@frxncisxo/prism/edge';
@@ -210,7 +211,7 @@ const gateway = new PrismEdgeGateway({
   cors: true,
   auth: {
     bearerToken: process.env.PRISM_EDGE_TOKEN!,
-    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/openapi/metrics.
+    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/ready/openapi/metrics.
   },
   rateLimit: {
     limit: 120,
@@ -252,9 +253,12 @@ export default {
 Default gateway endpoints:
 
 - `GET /health`
+- `GET /ready`
 - `GET /openapi.json`
 - `GET /metrics`
 - `POST /infer`
+
+Use `GET /health` for liveness and metadata, and `GET /ready` for traffic gates. Readiness returns `200` only when the gateway has initialized PRISM and verified that the configured model is deployed on the local CRDT node; otherwise it returns a structured `503` readiness payload.
 
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, 5xx errors, and latency samples.
 
@@ -284,6 +288,7 @@ const client = new PrismEdgeClient({
 });
 
 const health = await client.health();
+const ready = await client.ready();
 const spec = await client.openapi();
 const metrics = await client.metrics();
 const envelope = await client.inferEnvelope({

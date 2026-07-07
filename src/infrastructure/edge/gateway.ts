@@ -21,12 +21,34 @@ export interface PrismEdgeGatewayHealth {
   endpoints: {
     infer: 'POST /infer';
     health: 'GET /health';
+    ready: 'GET /ready';
     metrics: 'GET /metrics';
   };
 }
 
+export interface PrismEdgeGatewayReadiness {
+  ok: boolean;
+  ready: boolean;
+  service: string;
+  initialized: boolean;
+  platform: EdgePlatform;
+  modelId: string;
+  checks: {
+    initialized: {
+      ok: boolean;
+      message?: string;
+    };
+    modelDeployed: {
+      ok: boolean;
+      message?: string;
+    };
+  };
+  stats: ReturnType<PrismCRDT['getStats']>;
+}
+
 export interface PrismEdgeGatewayRoutes {
   health?: string;
+  ready?: string;
   infer?: string;
   openapi?: string;
   metrics?: string;
@@ -59,7 +81,7 @@ export interface PrismEdgeGatewayOpenAPISpec {
   };
 }
 
-export type PrismEdgeGatewayRouteName = 'health' | 'infer' | 'openapi' | 'metrics';
+export type PrismEdgeGatewayRouteName = 'health' | 'ready' | 'infer' | 'openapi' | 'metrics';
 export type PrismEdgeGatewayObservedRouteName = PrismEdgeGatewayRouteName | 'preflight' | 'notFound';
 
 export interface PrismEdgeGatewayRouteMetrics {
@@ -221,6 +243,27 @@ export class PrismEdgeGateway {
       return this.recordResponse(request, 'health', startedAt, this.jsonResponse(await this.health()), requestId);
     }
 
+    if (request.method === 'GET' && url.pathname === routes.ready) {
+      const unauthorized = await this.unauthorizedResponse(request, 'ready');
+      if (unauthorized) {
+        return this.recordResponse(request, 'ready', startedAt, unauthorized, requestId);
+      }
+
+      const limited = this.rateLimitResponse(request, 'ready');
+      if (limited) {
+        return this.recordResponse(request, 'ready', startedAt, limited, requestId);
+      }
+
+      const readiness = await this.readiness();
+      return this.recordResponse(
+        request,
+        'ready',
+        startedAt,
+        this.jsonResponse(readiness, readiness.ready ? 200 : 503),
+        requestId
+      );
+    }
+
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
       const unauthorized = await this.unauthorizedResponse(request, 'openapi');
       if (unauthorized) {
@@ -282,9 +325,41 @@ export class PrismEdgeGateway {
       endpoints: {
         infer: 'POST /infer',
         health: 'GET /health',
+        ready: 'GET /ready',
         metrics: 'GET /metrics',
       },
     };
+  }
+
+  async readiness(): Promise<PrismEdgeGatewayReadiness> {
+    try {
+      await this.initialize();
+    } catch (error) {
+      return this.readinessPayload(false, {
+        initialized: {
+          ok: false,
+          message: error instanceof Error ? error.message : 'Gateway initialization failed',
+        },
+        modelDeployed: {
+          ok: false,
+          message: 'Model deployment could not be verified',
+        },
+      });
+    }
+
+    const modelDeployed = await this.prism.isModelDeployed(this.config.model.id);
+    const ready = this.initialized && modelDeployed;
+
+    return this.readinessPayload(ready, {
+      initialized: {
+        ok: this.initialized,
+        ...(this.initialized ? {} : { message: 'Gateway has not completed initialization' }),
+      },
+      modelDeployed: {
+        ok: modelDeployed,
+        ...(modelDeployed ? {} : { message: `Model ${this.config.model.id} is not deployed on this CRDT node` }),
+      },
+    });
   }
 
   getPrism(): PrismCRDT {
@@ -364,6 +439,31 @@ export class PrismEdgeGateway {
                 content: {
                   'application/json': {
                     schema: { $ref: '#/components/schemas/PrismEdgeGatewayHealth' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        [routes.ready]: {
+          get: {
+            summary: 'Read PRISM edge gateway readiness',
+            operationId: 'getPrismEdgeReadiness',
+            ...(this.openapiSecurity('ready')),
+            responses: {
+              '200': {
+                description: 'Gateway is initialized and ready to receive inference traffic',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/PrismEdgeGatewayReadiness' },
+                  },
+                },
+              },
+              '503': {
+                description: 'Gateway is alive but not ready for inference traffic',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/PrismEdgeGatewayReadiness' },
                   },
                 },
               },
@@ -531,6 +631,35 @@ export class PrismEdgeGateway {
               endpoints: { type: 'object', additionalProperties: { type: 'string' } },
             },
           },
+          PrismEdgeGatewayReadiness: {
+            type: 'object',
+            required: ['ok', 'ready', 'service', 'initialized', 'platform', 'modelId', 'checks', 'stats'],
+            properties: {
+              ok: { type: 'boolean' },
+              ready: { type: 'boolean' },
+              service: { type: 'string' },
+              initialized: { type: 'boolean' },
+              platform: { type: 'string' },
+              modelId: { type: 'string' },
+              checks: {
+                type: 'object',
+                required: ['initialized', 'modelDeployed'],
+                properties: {
+                  initialized: { $ref: '#/components/schemas/ReadinessCheck' },
+                  modelDeployed: { $ref: '#/components/schemas/ReadinessCheck' },
+                },
+              },
+              stats: { type: 'object', additionalProperties: true },
+            },
+          },
+          ReadinessCheck: {
+            type: 'object',
+            required: ['ok'],
+            properties: {
+              ok: { type: 'boolean' },
+              message: { type: 'string' },
+            },
+          },
         },
         ...(this.config.auth ? {
           securitySchemes: {
@@ -592,6 +721,7 @@ export class PrismEdgeGateway {
   private resolveRoutes(): Required<PrismEdgeGatewayRoutes> {
     return {
       health: this.config.routes?.health ?? '/health',
+      ready: this.config.routes?.ready ?? '/ready',
       infer: this.config.routes?.infer ?? '/infer',
       openapi: this.config.routes?.openapi ?? '/openapi.json',
       metrics: this.config.routes?.metrics ?? '/metrics',
@@ -600,7 +730,7 @@ export class PrismEdgeGateway {
   }
 
   private routeList(routes: Required<PrismEdgeGatewayRoutes>): string[] {
-    const endpoints = [`GET ${routes.health}`, `POST ${routes.infer}`];
+    const endpoints = [`GET ${routes.health}`, `GET ${routes.ready}`, `POST ${routes.infer}`];
 
     if (this.config.openapi !== false) {
       endpoints.push(`GET ${routes.openapi}`);
@@ -616,6 +746,22 @@ export class PrismEdgeGateway {
   private modelVersion(): string {
     const version = this.config.model.metadata?.version;
     return typeof version === 'string' && version.length > 0 ? version : '1.0.0';
+  }
+
+  private readinessPayload(
+    ready: boolean,
+    checks: PrismEdgeGatewayReadiness['checks']
+  ): PrismEdgeGatewayReadiness {
+    return {
+      ok: ready,
+      ready,
+      service: this.config.serviceName ?? 'prism-edge-gateway',
+      initialized: this.initialized,
+      platform: this.config.platform,
+      modelId: this.config.model.id,
+      checks,
+      stats: this.prism.getStats(),
+    };
   }
 
   private async unauthorizedResponse(
@@ -771,6 +917,7 @@ export class PrismEdgeGateway {
       },
       routes: {
         health: this.emptyRouteMetrics(),
+        ready: this.emptyRouteMetrics(),
         infer: this.emptyRouteMetrics(),
         openapi: this.emptyRouteMetrics(),
         metrics: this.emptyRouteMetrics(),

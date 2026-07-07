@@ -67,8 +67,16 @@ assert(health.ok === true, 'health endpoint did not report ok');
 assert(health.stats.models === 1, 'health endpoint did not initialize the PRISM model registry');
 console.log('OK health endpoint initializes PRISM');
 
+const readyResponse = await worker.fetch(request('/ready'), env);
+const ready = await readyResponse.json();
+assert(readyResponse.status === 200, 'readiness endpoint did not return HTTP 200');
+assert(ready.ready === true, 'readiness endpoint did not report ready');
+assert(ready.checks.modelDeployed.ok === true, 'readiness endpoint did not verify deployed model');
+console.log('OK readiness endpoint verifies deployable traffic state');
+
 const openapi = await worker.fetch(request('/openapi.json'), env).then(response => response.json());
 assert(openapi.openapi === '3.1.0', 'OpenAPI endpoint did not return an OpenAPI 3.1 document');
+assert(openapi.paths['/ready'].get.operationId === 'getPrismEdgeReadiness', 'OpenAPI endpoint did not describe readiness route');
 assert(openapi.paths['/infer'].post.operationId === 'runPrismEdgeInference', 'OpenAPI endpoint did not describe inference route');
 assert(openapi.paths['/infer'].post.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark inference as bearer-protected');
 assert(openapi.paths['/metrics'].get.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark metrics as bearer-protected');

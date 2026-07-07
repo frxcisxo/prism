@@ -585,6 +585,8 @@ try {
     headers: { 'x-prism-request-id': 'validation-trace-id' },
   }));
   const routerHealthBody = await routerHealthResponse.json();
+  const readinessResponse = await gateway.handleRequest(new Request('https://prism.local/ready'));
+  const readinessBody = await readinessResponse.json();
   const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
   const openapiBody = await openapiResponse.json();
   let clientTraceHeader;
@@ -600,6 +602,7 @@ try {
     },
   });
   const clientHealth = await client.health();
+  const clientReadiness = await client.ready();
   const clientOpenAPI = await client.openapi();
   const clientMetrics = await client.metrics();
   const clientEnvelope = await client.inferEnvelope({
@@ -695,11 +698,15 @@ try {
   if (
     !health.ok
     || !routerHealthBody.ok
+    || readinessResponse.status !== 200
+    || readinessBody.ready !== true
+    || readinessBody.checks.modelDeployed.ok !== true
     || routerHealthResponse.headers.get('x-prism-request-id') !== 'validation-trace-id'
     || clientTraceHeader !== 'validation-client-trace-id'
     || !gatewayEvents.some(event => event.route === 'health' && event.requestId === 'validation-trace-id')
     || !gatewayEvents.some(event => event.route === 'infer' && event.status === 200)
     || !clientHealth.ok
+    || clientReadiness.ready !== true
     || clientEnvelope.success !== true
     || clientEnvelope.cached !== false
     || clientEnvelope.requestId !== 'validation-client-trace-id'
@@ -707,6 +714,7 @@ try {
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'
     || !openapiBody.paths['/infer']?.post
+    || !openapiBody.paths['/ready']?.get
     || !openapiBody.paths['/metrics']?.get
     || !clientMetrics.includes('prism_edge_gateway_requests_total')
     || gatewayMetricsSnapshot.routes.infer.status['200'] < 2
