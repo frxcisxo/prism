@@ -315,6 +315,7 @@ describe('Edge Adapters', () => {
       expect(health.endpoints).toEqual({
         infer: 'POST /infer',
         health: 'GET /health',
+        metrics: 'GET /metrics',
       });
     });
 
@@ -416,7 +417,7 @@ describe('Edge Adapters', () => {
       expect(inference.status).toBe(200);
       expect(inferenceBody.success).toBe(true);
       expect(notFound.status).toBe(404);
-      expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer', 'GET /openapi.json']);
+      expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer', 'GET /openapi.json', 'GET /metrics']);
       expect(inference.headers.get('access-control-allow-origin')).toBe('*');
       expect(health.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
     });
@@ -447,7 +448,7 @@ describe('Edge Adapters', () => {
       const inferenceBody = await inference.json();
 
       expect(root.status).toBe(404);
-      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'POST /api/prism', 'GET /api/openapi.json']);
+      expect(rootBody.endpoints).toEqual(['GET /api/ready', 'POST /api/prism', 'GET /api/openapi.json', 'GET /metrics']);
       expect(healthBody.ok).toBe(true);
       expect(openapiBody.paths['/api/ready']).toBeDefined();
       expect(openapiBody.paths['/api/prism']).toBeDefined();
@@ -468,7 +469,7 @@ describe('Edge Adapters', () => {
       const spec = gateway.getOpenAPISpec();
 
       expect(response.status).toBe(404);
-      expect(body.endpoints).toEqual(['GET /health', 'POST /infer']);
+      expect(body.endpoints).toEqual(['GET /health', 'POST /infer', 'GET /metrics']);
       expect(spec.paths['/openapi.json']).toBeUndefined();
     });
 
@@ -508,6 +509,28 @@ describe('Edge Adapters', () => {
       expect(openapi.paths['/health'].get.security).toBeUndefined();
     });
 
+    it('should allow protecting the metrics route with bearer auth', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'auth-metrics-gateway-node',
+        platform: 'cloudflare',
+        model,
+        auth: {
+          bearerToken: 'metrics-secret',
+          protectedRoutes: ['infer', 'metrics'],
+        },
+      });
+
+      const denied = await gateway.handleRequest(new Request('https://edge.test/metrics'));
+      const allowed = await gateway.handleRequest(new Request('https://edge.test/metrics', {
+        headers: { authorization: 'Bearer metrics-secret' },
+      }));
+      const openapi = gateway.getOpenAPISpec();
+
+      expect(denied.status).toBe(401);
+      expect(allowed.status).toBe(200);
+      expect(openapi.paths['/metrics'].get.security).toEqual([{ bearerAuth: [] }]);
+    });
+
     it('should rate limit inference by client key with retry headers', async () => {
       const gateway = new PrismEdgeGateway({
         nodeId: 'rate-limit-gateway-node',
@@ -543,6 +566,91 @@ describe('Edge Adapters', () => {
       expect(limited.headers.get('x-ratelimit-remaining')).toBe('0');
       expect(limitedBody.error.code).toBe('RATE_LIMITED');
       expect(otherClient.status).toBe(200);
+    });
+
+    it('should expose gateway traffic metrics as snapshots and Prometheus text', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'metrics-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'metrics-edge',
+        model,
+        auth: {
+          bearerToken: 'metrics-token',
+        },
+        rateLimit: {
+          limit: 1,
+          windowMs: 60_000,
+        },
+      });
+
+      const health = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const denied = await gateway.handleRequest(inferenceRequest('metrics-denied', 'No token.'));
+      const allowed = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer metrics-token',
+          'cf-connecting-ip': '203.0.113.20',
+        },
+        body: JSON.stringify({ id: 'metrics-allowed', modelId: model.id, input: 'Count this.' }),
+      }));
+      const limited = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer metrics-token',
+          'cf-connecting-ip': '203.0.113.20',
+        },
+        body: JSON.stringify({ id: 'metrics-limited', modelId: model.id, input: 'Limit this.' }),
+      }));
+      const metricsResponse = await gateway.handleRequest(new Request('https://edge.test/metrics'));
+      const metricsText = await metricsResponse.text();
+      const snapshot = gateway.getMetricsSnapshot();
+
+      expect(health.status).toBe(200);
+      expect(denied.status).toBe(401);
+      expect(allowed.status).toBe(200);
+      expect(limited.status).toBe(429);
+      expect(metricsResponse.status).toBe(200);
+      expect(metricsResponse.headers.get('content-type')).toContain('text/plain');
+      expect(snapshot.totals.requests).toBe(5);
+      expect(snapshot.totals.unauthorized).toBe(1);
+      expect(snapshot.totals.rateLimited).toBe(1);
+      expect(snapshot.routes.health.status['200']).toBe(1);
+      expect(snapshot.routes.infer.status['401']).toBe(1);
+      expect(snapshot.routes.infer.status['200']).toBe(1);
+      expect(snapshot.routes.infer.status['429']).toBe(1);
+      expect(snapshot.routes.metrics.status['200']).toBe(1);
+      expect(metricsText).toContain('# HELP prism_edge_gateway_requests_total Total PRISM edge gateway requests.');
+      expect(metricsText).toContain('prism_edge_gateway_requests_total 4');
+      expect(metricsText).toContain('prism_edge_gateway_route_requests_total{route="infer",status="429"} 1');
+      expect(metricsText).toContain('prism_edge_gateway_unauthorized_total 1');
+      expect(metricsText).toContain('prism_edge_gateway_rate_limited_total 1');
+    });
+
+    it('should support custom and disabled metrics routes', async () => {
+      const customGateway = new PrismEdgeGateway({
+        nodeId: 'custom-metrics-gateway-node',
+        platform: 'cloudflare',
+        model,
+        routes: {
+          metrics: '/api/metrics',
+        },
+      });
+      const disabledGateway = new PrismEdgeGateway({
+        nodeId: 'disabled-metrics-gateway-node',
+        platform: 'cloudflare',
+        model,
+        metrics: false,
+      });
+
+      const customMetrics = await customGateway.handleRequest(new Request('https://edge.test/api/metrics'));
+      const customOpenAPI = customGateway.getOpenAPISpec();
+      const disabledMetrics = await disabledGateway.handleRequest(new Request('https://edge.test/metrics'));
+      const disabledOpenAPI = disabledGateway.getOpenAPISpec();
+
+      expect(customMetrics.status).toBe(200);
+      expect(customOpenAPI.paths['/api/metrics'].get.operationId).toBe('getPrismEdgeMetrics');
+      expect(disabledMetrics.status).toBe(404);
+      expect(disabledOpenAPI.paths['/metrics']).toBeUndefined();
     });
 
     it('should support custom rate limit keys and routes', async () => {
@@ -595,6 +703,7 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/health',
           infer: '/api/infer',
+          metrics: '/api/metrics',
           openapi: '/api/openapi.json',
         },
       });
@@ -604,6 +713,7 @@ describe('Edge Adapters', () => {
         routes: {
           health: '/api/health',
           infer: '/api/infer',
+          metrics: '/api/metrics',
           openapi: '/api/openapi.json',
         },
         headers: () => ({ authorization: 'Bearer test-token' }),
@@ -646,11 +756,13 @@ describe('Edge Adapters', () => {
 
       const health = await client.health();
       const openapi = await client.openapi();
+      const metrics = await client.metrics();
 
       expect(health.ok).toBe(true);
       expect(health.model.id).toBe(model.id);
       expect(openapi.openapi).toBe('3.1.0');
       expect(openapi.paths['/api/infer'].post.operationId).toBe('runPrismEdgeInference');
+      expect(metrics).toContain('prism_edge_gateway_requests_total');
       expect(requests[0].headers.get('authorization')).toBe('Bearer test-token');
     });
 

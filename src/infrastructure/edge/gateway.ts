@@ -21,6 +21,7 @@ export interface PrismEdgeGatewayHealth {
   endpoints: {
     infer: 'POST /infer';
     health: 'GET /health';
+    metrics: 'GET /metrics';
   };
 }
 
@@ -28,6 +29,7 @@ export interface PrismEdgeGatewayRoutes {
   health?: string;
   infer?: string;
   openapi?: string;
+  metrics?: string;
   rootHealth?: boolean;
 }
 
@@ -57,7 +59,33 @@ export interface PrismEdgeGatewayOpenAPISpec {
   };
 }
 
-export type PrismEdgeGatewayRouteName = 'health' | 'infer' | 'openapi';
+export type PrismEdgeGatewayRouteName = 'health' | 'infer' | 'openapi' | 'metrics';
+export type PrismEdgeGatewayObservedRouteName = PrismEdgeGatewayRouteName | 'preflight' | 'notFound';
+
+export interface PrismEdgeGatewayRouteMetrics {
+  requests: number;
+  latencyMs: number;
+  averageLatencyMs: number;
+  status: Record<string, number>;
+}
+
+export interface PrismEdgeGatewayMetricsSnapshot {
+  generatedAt: number;
+  service: string;
+  totals: {
+    requests: number;
+    unauthorized: number;
+    rateLimited: number;
+    errors: number;
+    latencyMs: number;
+    averageLatencyMs: number;
+  };
+  routes: Record<PrismEdgeGatewayObservedRouteName, PrismEdgeGatewayRouteMetrics>;
+}
+
+export interface PrismEdgeGatewayMetricsConfig {
+  prometheus?: boolean;
+}
 
 export interface PrismEdgeGatewayAuthConfig {
   bearerToken?: string | string[];
@@ -93,6 +121,7 @@ export interface PrismEdgeGatewayConfig {
   openapi?: PrismEdgeGatewayOpenAPIInfo | false;
   auth?: PrismEdgeGatewayAuthConfig;
   rateLimit?: PrismEdgeGatewayRateLimitConfig;
+  metrics?: PrismEdgeGatewayMetricsConfig | false;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -106,6 +135,7 @@ export class PrismEdgeGateway {
   private readonly capabilities: EdgeNode['capabilities'];
   private readonly cache: EdgeCache;
   private readonly rateLimitEntries = new Map<string, { count: number; resetAt: number }>();
+  private readonly metrics: PrismEdgeGatewayMetricsSnapshot;
   private initialized = false;
   private initializePromise?: Promise<void>;
 
@@ -117,6 +147,7 @@ export class PrismEdgeGateway {
       wasm: true,
       quantization: true,
     };
+    this.metrics = this.createEmptyMetricsSnapshot();
   }
 
   async initialize(): Promise<void> {
@@ -141,11 +172,12 @@ export class PrismEdgeGateway {
   }
 
   async handleRequest(request: Request): Promise<Response> {
+    const startedAt = this.now();
     const url = new URL(request.url);
     const routes = this.resolveRoutes();
 
     if (request.method === 'OPTIONS') {
-      return this.jsonResponse({ ok: true });
+      return this.recordResponse('preflight', startedAt, this.jsonResponse({ ok: true }));
     }
 
     if (
@@ -154,49 +186,63 @@ export class PrismEdgeGateway {
     ) {
       const unauthorized = await this.unauthorizedResponse(request, 'health');
       if (unauthorized) {
-        return unauthorized;
+        return this.recordResponse('health', startedAt, unauthorized);
       }
 
       const limited = this.rateLimitResponse(request, 'health');
       if (limited) {
-        return limited;
+        return this.recordResponse('health', startedAt, limited);
       }
 
-      return this.jsonResponse(await this.health());
+      return this.recordResponse('health', startedAt, this.jsonResponse(await this.health()));
     }
 
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
       const unauthorized = await this.unauthorizedResponse(request, 'openapi');
       if (unauthorized) {
-        return unauthorized;
+        return this.recordResponse('openapi', startedAt, unauthorized);
       }
 
       const limited = this.rateLimitResponse(request, 'openapi');
       if (limited) {
-        return limited;
+        return this.recordResponse('openapi', startedAt, limited);
       }
 
-      return this.jsonResponse(this.getOpenAPISpec());
+      return this.recordResponse('openapi', startedAt, this.jsonResponse(this.getOpenAPISpec()));
+    }
+
+    if (this.metricsEnabled() && request.method === 'GET' && url.pathname === routes.metrics) {
+      const unauthorized = await this.unauthorizedResponse(request, 'metrics');
+      if (unauthorized) {
+        return this.recordResponse('metrics', startedAt, unauthorized);
+      }
+
+      const limited = this.rateLimitResponse(request, 'metrics');
+      if (limited) {
+        return this.recordResponse('metrics', startedAt, limited);
+      }
+
+      return this.recordResponse('metrics', startedAt, this.metricsResponse());
     }
 
     if (request.method === 'POST' && url.pathname === routes.infer) {
       const unauthorized = await this.unauthorizedResponse(request, 'infer');
       if (unauthorized) {
-        return unauthorized;
+        return this.recordResponse('infer', startedAt, unauthorized);
       }
 
       const limited = this.rateLimitResponse(request, 'infer');
       if (limited) {
-        return limited;
+        return this.recordResponse('infer', startedAt, limited);
       }
 
-      return this.withCors(await this.handleInferenceRequest(request));
+      return this.recordResponse('infer', startedAt, this.withCors(await this.handleInferenceRequest(request)));
     }
 
-    return this.jsonResponse({
+    return this.recordResponse('notFound', startedAt, this.jsonResponse({
       error: 'Not found',
       endpoints: this.routeList(routes),
-    }, 404);
+    }, 404));
   }
 
   async health(): Promise<PrismEdgeGatewayHealth> {
@@ -212,12 +258,63 @@ export class PrismEdgeGateway {
       endpoints: {
         infer: 'POST /infer',
         health: 'GET /health',
+        metrics: 'GET /metrics',
       },
     };
   }
 
   getPrism(): PrismCRDT {
     return this.prism;
+  }
+
+  getMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
+    return this.cloneMetricsSnapshot();
+  }
+
+  toPrometheusMetrics(): string {
+    const snapshot = this.getMetricsSnapshot();
+    const lines = [
+      '# HELP prism_edge_gateway_requests_total Total PRISM edge gateway requests.',
+      '# TYPE prism_edge_gateway_requests_total counter',
+      `prism_edge_gateway_requests_total ${snapshot.totals.requests}`,
+      '# HELP prism_edge_gateway_route_requests_total Total PRISM edge gateway requests by route and status.',
+      '# TYPE prism_edge_gateway_route_requests_total counter',
+    ];
+
+    for (const [route, metrics] of Object.entries(snapshot.routes)) {
+      for (const [status, count] of Object.entries(metrics.status)) {
+        lines.push(`prism_edge_gateway_route_requests_total{route="${this.metricLabel(route)}",status="${this.metricLabel(status)}"} ${count}`);
+      }
+    }
+
+    lines.push(
+      '# HELP prism_edge_gateway_unauthorized_total Total unauthorized PRISM edge gateway requests.',
+      '# TYPE prism_edge_gateway_unauthorized_total counter',
+      `prism_edge_gateway_unauthorized_total ${snapshot.totals.unauthorized}`,
+      '# HELP prism_edge_gateway_rate_limited_total Total rate-limited PRISM edge gateway requests.',
+      '# TYPE prism_edge_gateway_rate_limited_total counter',
+      `prism_edge_gateway_rate_limited_total ${snapshot.totals.rateLimited}`,
+      '# HELP prism_edge_gateway_errors_total Total PRISM edge gateway 5xx responses.',
+      '# TYPE prism_edge_gateway_errors_total counter',
+      `prism_edge_gateway_errors_total ${snapshot.totals.errors}`,
+      '# HELP prism_edge_gateway_latency_ms_sum Total PRISM edge gateway latency in milliseconds by route.',
+      '# TYPE prism_edge_gateway_latency_ms_sum counter',
+    );
+
+    for (const [route, metrics] of Object.entries(snapshot.routes)) {
+      lines.push(`prism_edge_gateway_latency_ms_sum{route="${this.metricLabel(route)}"} ${metrics.latencyMs}`);
+    }
+
+    lines.push(
+      '# HELP prism_edge_gateway_latency_ms_count Total PRISM edge gateway latency samples by route.',
+      '# TYPE prism_edge_gateway_latency_ms_count counter',
+    );
+
+    for (const [route, metrics] of Object.entries(snapshot.routes)) {
+      lines.push(`prism_edge_gateway_latency_ms_count{route="${this.metricLabel(route)}"} ${metrics.requests}`);
+    }
+
+    return `${lines.join('\n')}\n`;
   }
 
   getOpenAPISpec(): PrismEdgeGatewayOpenAPISpec {
@@ -312,6 +409,25 @@ export class PrismEdgeGateway {
             },
           },
         }),
+        ...(this.metricsEnabled() ? {
+          [routes.metrics]: {
+            get: {
+              summary: 'Read PRISM edge gateway Prometheus metrics',
+              operationId: 'getPrismEdgeMetrics',
+              ...(this.openapiSecurity('metrics')),
+              responses: {
+                '200': {
+                  description: 'Prometheus text exposition for gateway traffic, auth, rate limits, and latency',
+                  content: {
+                    'text/plain': {
+                      schema: { type: 'string' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        } : {}),
       },
       components: {
         schemas: {
@@ -454,6 +570,7 @@ export class PrismEdgeGateway {
       health: this.config.routes?.health ?? '/health',
       infer: this.config.routes?.infer ?? '/infer',
       openapi: this.config.routes?.openapi ?? '/openapi.json',
+      metrics: this.config.routes?.metrics ?? '/metrics',
       rootHealth: this.config.routes?.rootHealth ?? true,
     };
   }
@@ -463,6 +580,10 @@ export class PrismEdgeGateway {
 
     if (this.config.openapi !== false) {
       endpoints.push(`GET ${routes.openapi}`);
+    }
+
+    if (this.metricsEnabled()) {
+      endpoints.push(`GET ${routes.metrics}`);
     }
 
     return endpoints;
@@ -596,6 +717,120 @@ export class PrismEdgeGateway {
         ...extraHeaders,
       },
     });
+  }
+
+  private metricsResponse(): Response {
+    return new Response(this.toPrometheusMetrics(), {
+      status: 200,
+      headers: {
+        'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+        ...this.corsHeaders(),
+      },
+    });
+  }
+
+  private metricsEnabled(): boolean {
+    return this.config.metrics !== false && this.config.metrics?.prometheus !== false;
+  }
+
+  private createEmptyMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
+    return {
+      generatedAt: Date.now(),
+      service: this.config.serviceName ?? 'prism-edge-gateway',
+      totals: {
+        requests: 0,
+        unauthorized: 0,
+        rateLimited: 0,
+        errors: 0,
+        latencyMs: 0,
+        averageLatencyMs: 0,
+      },
+      routes: {
+        health: this.emptyRouteMetrics(),
+        infer: this.emptyRouteMetrics(),
+        openapi: this.emptyRouteMetrics(),
+        metrics: this.emptyRouteMetrics(),
+        preflight: this.emptyRouteMetrics(),
+        notFound: this.emptyRouteMetrics(),
+      },
+    };
+  }
+
+  private emptyRouteMetrics(): PrismEdgeGatewayRouteMetrics {
+    return {
+      requests: 0,
+      latencyMs: 0,
+      averageLatencyMs: 0,
+      status: {},
+    };
+  }
+
+  private recordResponse(
+    route: PrismEdgeGatewayObservedRouteName,
+    startedAt: number,
+    response: Response
+  ): Response {
+    const elapsed = Math.max(0, this.now() - startedAt);
+    const status = String(response.status);
+    const routeMetrics = this.metrics.routes[route];
+
+    this.metrics.generatedAt = Date.now();
+    this.metrics.totals.requests += 1;
+    this.metrics.totals.latencyMs += elapsed;
+    this.metrics.totals.averageLatencyMs = this.average(
+      this.metrics.totals.latencyMs,
+      this.metrics.totals.requests
+    );
+
+    if (response.status === 401) {
+      this.metrics.totals.unauthorized += 1;
+    }
+
+    if (response.status === 429) {
+      this.metrics.totals.rateLimited += 1;
+    }
+
+    if (response.status >= 500) {
+      this.metrics.totals.errors += 1;
+    }
+
+    routeMetrics.requests += 1;
+    routeMetrics.latencyMs += elapsed;
+    routeMetrics.averageLatencyMs = this.average(routeMetrics.latencyMs, routeMetrics.requests);
+    routeMetrics.status[status] = (routeMetrics.status[status] ?? 0) + 1;
+
+    return response;
+  }
+
+  private cloneMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
+    return {
+      generatedAt: this.metrics.generatedAt,
+      service: this.metrics.service,
+      totals: { ...this.metrics.totals },
+      routes: Object.fromEntries(
+        Object.entries(this.metrics.routes).map(([route, metrics]) => [
+          route,
+          {
+            requests: metrics.requests,
+            latencyMs: metrics.latencyMs,
+            averageLatencyMs: metrics.averageLatencyMs,
+            status: { ...metrics.status },
+          },
+        ])
+      ) as Record<PrismEdgeGatewayObservedRouteName, PrismEdgeGatewayRouteMetrics>,
+    };
+  }
+
+  private average(total: number, samples: number): number {
+    return samples === 0 ? 0 : total / samples;
+  }
+
+  private now(): number {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+  }
+
+  private metricLabel(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
   }
 
   private withCors(response: Response): Response {

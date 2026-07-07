@@ -1,6 +1,9 @@
 import type { InferenceRequest, InferenceResult } from '../../index';
 import type { EdgeResponse } from './edge';
-import type { PrismEdgeGatewayHealth, PrismEdgeGatewayOpenAPISpec } from './gateway';
+import type {
+  PrismEdgeGatewayHealth,
+  PrismEdgeGatewayOpenAPISpec,
+} from './gateway';
 
 export interface PrismEdgeClientConfig {
   baseUrl: string;
@@ -10,6 +13,7 @@ export interface PrismEdgeClientConfig {
   routes?: {
     health?: string;
     infer?: string;
+    metrics?: string;
     openapi?: string;
   };
 }
@@ -48,6 +52,10 @@ export class PrismEdgeClient {
     return this.getJson<PrismEdgeGatewayOpenAPISpec>(this.route('openapi'));
   }
 
+  async metrics(): Promise<string> {
+    return this.requestText(this.route('metrics'), { method: 'GET' });
+  }
+
   async infer(request: InferenceRequest): Promise<InferenceResult> {
     const envelope = await this.requestJson<EdgeResponse<InferenceResult>>(this.route('infer'), {
       method: 'POST',
@@ -71,16 +79,7 @@ export class PrismEdgeClient {
   }
 
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
-    const headers = new Headers(await this.resolveHeaders());
-
-    if (init.body !== undefined && !headers.has('content-type')) {
-      headers.set('content-type', 'application/json');
-    }
-
-    const response = await this.fetchImpl(this.url(path), {
-      ...init,
-      headers,
-    });
+    const response = await this.request(path, init);
     const payload = await this.readJson(response);
 
     if (!response.ok) {
@@ -94,6 +93,35 @@ export class PrismEdgeClient {
     }
 
     return payload as T;
+  }
+
+  private async requestText(path: string, init: RequestInit): Promise<string> {
+    const response = await this.request(path, init);
+    const text = await response.text();
+
+    if (!response.ok) {
+      throw new PrismEdgeClientError(
+        `PRISM edge request failed with HTTP ${response.status}`,
+        response.status,
+        undefined,
+        text
+      );
+    }
+
+    return text;
+  }
+
+  private async request(path: string, init: RequestInit): Promise<Response> {
+    const headers = new Headers(await this.resolveHeaders());
+
+    if (init.body !== undefined && !headers.has('content-type')) {
+      headers.set('content-type', 'application/json');
+    }
+
+    return this.fetchImpl(this.url(path), {
+      ...init,
+      headers,
+    });
   }
 
   private async readJson(response: Response): Promise<unknown> {
@@ -131,10 +159,11 @@ export class PrismEdgeClient {
     return headers;
   }
 
-  private route(name: 'health' | 'infer' | 'openapi'): string {
+  private route(name: 'health' | 'infer' | 'metrics' | 'openapi'): string {
     const defaults = {
       health: '/health',
       infer: '/infer',
+      metrics: '/metrics',
       openapi: '/openapi.json',
     };
 

@@ -186,7 +186,7 @@ Example request body:
 
 ### PrismEdgeGateway
 
-Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, publish `/openapi.json`, handle CORS/preflight/404 responses, and share an edge cache across requests.
+Use `PrismEdgeGateway` when an edge function needs a complete PRISM request surface: initialize a CRDT node once, deploy a model, expose health, route `POST /infer` through the right edge adapter, publish `/openapi.json`, emit Prometheus-ready `/metrics`, handle CORS/preflight/404 responses, and share an edge cache across requests.
 
 ```typescript
 import { PrismEdgeGateway } from '@frxncisxo/prism/edge';
@@ -200,7 +200,7 @@ const gateway = new PrismEdgeGateway({
   cors: true,
   auth: {
     bearerToken: process.env.PRISM_EDGE_TOKEN!,
-    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/openapi.
+    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/openapi/metrics.
   },
   rateLimit: {
     limit: 120,
@@ -210,6 +210,10 @@ const gateway = new PrismEdgeGateway({
   openapi: {
     title: 'PRISM Retail Edge API',
     version: '1.0.0',
+  },
+  metrics: {
+    // Enabled by default. Set metrics: false if metrics are exposed through another private path.
+    prometheus: true,
   },
   model: {
     id: 'edge-triage-small',
@@ -232,7 +236,10 @@ Default gateway endpoints:
 
 - `GET /health`
 - `GET /openapi.json`
+- `GET /metrics`
 - `POST /infer`
+
+`gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, 5xx errors, and latency samples.
 
 ### PrismEdgeClient
 
@@ -248,6 +255,7 @@ const client = new PrismEdgeClient({
 
 const health = await client.health();
 const spec = await client.openapi();
+const metrics = await client.metrics();
 const result = await client.infer({
   id: 'retail-alert-001',
   modelId: 'edge-triage-small',

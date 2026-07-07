@@ -587,11 +587,13 @@ try {
   });
   const clientHealth = await client.health();
   const clientOpenAPI = await client.openapi();
+  const clientMetrics = await client.metrics();
   const clientInference = await client.infer({
     id: 'gateway-client-validation',
     modelId: 'validation-gateway-model',
     input: 'Validate PrismEdgeClient.',
   });
+  const gatewayMetricsSnapshot = gateway.getMetricsSnapshot();
   const protectedGateway = new PrismEdgeGateway({
     nodeId: 'validation-protected-gateway',
     platform: 'cloudflare',
@@ -640,6 +642,7 @@ try {
     rateLimited = error?.status === 429 && error?.code === 'RATE_LIMITED';
   }
   const protectedSpec = protectedGateway.getOpenAPISpec();
+  const protectedMetrics = protectedGateway.toPrometheusMetrics();
 
   if (
     !health.ok
@@ -648,6 +651,9 @@ try {
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'
     || !openapiBody.paths['/infer']?.post
+    || !openapiBody.paths['/metrics']?.get
+    || !clientMetrics.includes('prism_edge_gateway_requests_total')
+    || gatewayMetricsSnapshot.routes.infer.status['200'] !== 1
     || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
@@ -656,14 +662,16 @@ try {
     || protectedInference.edgeId !== 'protected-validation'
     || !rateLimited
     || !protectedSpec.paths['/infer']?.post
+    || !protectedSpec.paths['/metrics']?.get
     || !protectedSpec.components.securitySchemes?.bearerAuth
+    || !protectedMetrics.includes('prism_edge_gateway_rate_limited_total 1')
     || firstGatewayBody.data.output.region !== 'validation'
     || repeatGatewayBody.cached !== true
   ) {
     throw new Error('PrismEdgeGateway smoke check returned unexpected output');
   }
 
-  console.log('OK edge adapters, PrismEdgeGateway, and PrismEdgeClient infer/cache/security headers');
+  console.log('OK edge adapters, PrismEdgeGateway, and PrismEdgeClient infer/cache/security/metrics headers');
 } catch (error) {
   fail('edge adapters', error);
 }
