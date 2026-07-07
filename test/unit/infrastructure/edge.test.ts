@@ -817,5 +817,139 @@ describe('Edge Adapters', () => {
         code: 'UNAUTHORIZED',
       } satisfies Partial<PrismEdgeClientError>);
     });
+
+    it('should retry transient HTTP responses before returning success', async () => {
+      const responses = [
+        new Response(JSON.stringify({ error: { code: 'UNAVAILABLE', message: 'Try again' } }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+        new Response(JSON.stringify({
+          success: true,
+          latency: 1,
+          cached: false,
+          data: {
+            id: 'retry-client',
+            modelId: model.id,
+            output: { text: 'Recovered after retry.' },
+            latency: 1,
+            edgeId: 'retry-edge',
+            timestamp: Date.now(),
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ];
+      const delays: number[] = [];
+      const fetchImpl = vi.fn().mockImplementation(async () => responses.shift()!);
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: fetchImpl,
+        retry: {
+          retries: 1,
+          backoffMs: 25,
+        },
+        sleep: async ms => {
+          delays.push(ms);
+        },
+      });
+
+      const result = await client.infer({
+        id: 'retry-client',
+        modelId: model.id,
+        input: 'Retry transient failure.',
+      });
+
+      expect(result.edgeId).toBe('retry-edge');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(delays).toEqual([25]);
+    });
+
+    it('should cap Retry-After delays for rate-limited responses', async () => {
+      const responses = [
+        new Response(JSON.stringify({ error: { code: 'RATE_LIMITED', message: 'Slow down' } }), {
+          status: 429,
+          headers: {
+            'content-type': 'application/json',
+            'retry-after': '60',
+          },
+        }),
+        new Response(JSON.stringify({
+          success: true,
+          latency: 1,
+          cached: false,
+          data: {
+            id: 'retry-after-client',
+            modelId: model.id,
+            output: { text: 'Recovered after retry-after.' },
+            latency: 1,
+            edgeId: 'retry-after-edge',
+            timestamp: Date.now(),
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ];
+      const delays: number[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: vi.fn().mockImplementation(async () => responses.shift()!),
+        retry: {
+          retries: 1,
+          maxRetryAfterMs: 100,
+        },
+        sleep: async ms => {
+          delays.push(ms);
+        },
+      });
+
+      const result = await client.infer({
+        id: 'retry-after-client',
+        modelId: model.id,
+        input: 'Retry after rate limit.',
+      });
+
+      expect(result.edgeId).toBe('retry-after-edge');
+      expect(delays).toEqual([100]);
+    });
+
+    it('should retry network errors and expose structured failure after exhaustion', async () => {
+      const fetchImpl = vi.fn().mockRejectedValue(new Error('connection reset'));
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: fetchImpl,
+        retry: {
+          retries: 2,
+          backoffMs: 0,
+        },
+      });
+
+      await expect(client.health()).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        status: 0,
+        code: 'NETWORK_ERROR',
+      } satisfies Partial<PrismEdgeClientError>);
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    });
+
+    it('should surface request timeouts as structured client errors', async () => {
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        timeoutMs: 1,
+        fetch: async (_input, init) => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new DOMException('Aborted', 'AbortError'));
+          });
+        }),
+      });
+
+      await expect(client.health()).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        status: 0,
+        code: 'TIMEOUT',
+      } satisfies Partial<PrismEdgeClientError>);
+    });
   });
 });

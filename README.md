@@ -261,6 +261,12 @@ import { PrismEdgeClient } from '@frxncisxo/prism/edge';
 const client = new PrismEdgeClient({
   baseUrl: 'https://prism-edge.example.com',
   bearerToken: () => process.env.PRISM_EDGE_TOKEN!,
+  timeoutMs: 5_000,
+  retry: {
+    retries: 2,
+    backoffMs: 100,
+    maxBackoffMs: 1_000,
+  },
 });
 
 const health = await client.health();
@@ -272,6 +278,8 @@ const result = await client.infer({
   input: 'Prioritize an urgent store shelf anomaly at the edge.',
 });
 ```
+
+Client retries are opt-in and target transient conditions by default: `408`, `425`, `429`, `500`, `502`, `503`, and `504`, plus network failures and timeouts. `Retry-After` is respected and capped by `maxRetryAfterMs` so dashboards and edge jobs do not hang unexpectedly.
 
 ## Quick Start
 

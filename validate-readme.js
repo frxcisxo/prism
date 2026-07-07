@@ -618,6 +618,30 @@ try {
     bearerToken: 'validation-token',
     fetch: (input, init) => protectedGateway.handleRequest(new Request(input, init)),
   });
+  let transientFailures = 0;
+  const resilientClient = new PrismEdgeClient({
+    baseUrl: 'https://resilient.prism.local',
+    retry: {
+      retries: 1,
+      backoffMs: 0,
+    },
+    fetch: (input, init) => {
+      if (transientFailures === 0) {
+        transientFailures += 1;
+        return Promise.resolve(new Response(JSON.stringify({
+          success: false,
+          error: { code: 'TRANSIENT', message: 'Transient edge failure' },
+          latency: 0,
+          cached: false,
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+
+      return gateway.handleRequest(new Request(input, init));
+    },
+  });
   const deniedProtectedResponse = await protectedGateway.handleRequest(new Request('https://protected.prism.local/infer', {
     method: 'POST',
     body: JSON.stringify({
@@ -630,6 +654,11 @@ try {
     id: 'protected-allowed',
     modelId: 'validation-protected-model',
     input: 'Authorized PrismEdgeClient.',
+  });
+  const resilientInference = await resilientClient.infer({
+    id: 'resilient-client-validation',
+    modelId: 'validation-gateway-model',
+    input: 'Validate PrismEdgeClient retry.',
   });
   let rateLimited = false;
   try {
@@ -660,6 +689,8 @@ try {
     || clientInference.edgeId !== 'cloudflare-validation'
     || deniedProtectedResponse.status !== 401
     || protectedInference.edgeId !== 'protected-validation'
+    || resilientInference.edgeId !== 'cloudflare-validation'
+    || transientFailures !== 1
     || !rateLimited
     || !protectedSpec.paths['/infer']?.post
     || !protectedSpec.paths['/metrics']?.get

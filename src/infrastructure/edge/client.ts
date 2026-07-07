@@ -10,12 +10,24 @@ export interface PrismEdgeClientConfig {
   fetch?: typeof fetch;
   bearerToken?: string | (() => string | Promise<string>);
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
+  timeoutMs?: number;
+  retry?: PrismEdgeClientRetryConfig | false;
+  sleep?: (ms: number) => Promise<void>;
   routes?: {
     health?: string;
     infer?: string;
     metrics?: string;
     openapi?: string;
   };
+}
+
+export interface PrismEdgeClientRetryConfig {
+  retries?: number;
+  backoffMs?: number;
+  maxBackoffMs?: number;
+  maxRetryAfterMs?: number;
+  respectRetryAfter?: boolean;
+  statuses?: number[];
 }
 
 export class PrismEdgeClientError extends Error {
@@ -112,16 +124,149 @@ export class PrismEdgeClient {
   }
 
   private async request(path: string, init: RequestInit): Promise<Response> {
+    const retry = this.resolveRetryConfig();
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= retry.retries; attempt += 1) {
+      try {
+        const response = await this.requestOnce(path, init);
+
+        if (!this.shouldRetryStatus(response.status, retry) || attempt === retry.retries) {
+          return response;
+        }
+
+        await this.sleep(this.retryDelay(attempt, retry, response));
+      } catch (error) {
+        lastError = error;
+
+        if (error instanceof PrismEdgeClientError) {
+          if (error.code === 'TIMEOUT' && attempt < retry.retries) {
+            await this.sleep(this.retryDelay(attempt, retry));
+            continue;
+          }
+
+          throw error;
+        }
+
+        if (attempt === retry.retries) {
+          throw new PrismEdgeClientError(
+            error instanceof Error ? error.message : 'PRISM edge network request failed',
+            0,
+            'NETWORK_ERROR',
+            error
+          );
+        }
+
+        await this.sleep(this.retryDelay(attempt, retry));
+      }
+    }
+
+    throw new PrismEdgeClientError(
+      lastError instanceof Error ? lastError.message : 'PRISM edge request failed',
+      0,
+      'NETWORK_ERROR',
+      lastError
+    );
+  }
+
+  private async requestOnce(path: string, init: RequestInit): Promise<Response> {
     const headers = new Headers(await this.resolveHeaders());
 
     if (init.body !== undefined && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
     }
 
-    return this.fetchImpl(this.url(path), {
-      ...init,
-      headers,
-    });
+    const controller = this.config.timeoutMs && this.config.timeoutMs > 0
+      ? new AbortController()
+      : undefined;
+    const timeout = controller
+      ? setTimeout(() => controller.abort(), this.config.timeoutMs)
+      : undefined;
+
+    try {
+      return await this.fetchImpl(this.url(path), {
+        ...init,
+        headers,
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new PrismEdgeClientError(
+          `PRISM edge request timed out after ${this.config.timeoutMs}ms`,
+          0,
+          'TIMEOUT',
+          error
+        );
+      }
+
+      throw error;
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private resolveRetryConfig(): Required<PrismEdgeClientRetryConfig> {
+    const retry = this.config.retry === false ? {} : this.config.retry ?? {};
+
+    return {
+      retries: Math.max(0, retry.retries ?? 0),
+      backoffMs: Math.max(0, retry.backoffMs ?? 250),
+      maxBackoffMs: Math.max(0, retry.maxBackoffMs ?? 2_000),
+      maxRetryAfterMs: Math.max(0, retry.maxRetryAfterMs ?? 2_000),
+      respectRetryAfter: retry.respectRetryAfter ?? true,
+      statuses: retry.statuses ?? [408, 425, 429, 500, 502, 503, 504],
+    };
+  }
+
+  private shouldRetryStatus(status: number, retry: Required<PrismEdgeClientRetryConfig>): boolean {
+    return retry.retries > 0 && retry.statuses.includes(status);
+  }
+
+  private retryDelay(
+    attempt: number,
+    retry: Required<PrismEdgeClientRetryConfig>,
+    response?: Response
+  ): number {
+    const retryAfter = response && retry.respectRetryAfter
+      ? this.retryAfterMs(response.headers.get('retry-after'))
+      : undefined;
+
+    if (retryAfter !== undefined) {
+      return Math.min(retryAfter, retry.maxRetryAfterMs);
+    }
+
+    return Math.min(retry.backoffMs * (2 ** attempt), retry.maxBackoffMs);
+  }
+
+  private retryAfterMs(value: string | null): number | undefined {
+    if (!value) {
+      return undefined;
+    }
+
+    const seconds = Number(value);
+
+    if (Number.isFinite(seconds)) {
+      return Math.max(0, seconds * 1000);
+    }
+
+    const date = Date.parse(value);
+
+    return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+
+    if (this.config.sleep) {
+      await this.config.sleep(ms);
+      return;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, ms));
   }
 
   private async readJson(response: Response): Promise<unknown> {
