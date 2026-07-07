@@ -8,6 +8,8 @@
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
+Need a production reliability review? See [PRISM Commercial Support](COMMERCIAL_SUPPORT.md) for a fixed-scope Edge AI Reliability Snapshot, or review a [sample Snapshot report](SAMPLE_SNAPSHOT_REPORT.md).
+
 ## Current Status
 
 PRISM is now buildable, type-checkable, and demoable as a TypeScript package.
@@ -127,6 +129,8 @@ PRISM's CRDT implementation is designed to reduce coordination risk in edge depl
 - Operational value of health checks, alert states, and Prometheus metrics
 
 Use PRISM's demos and validation scripts as the starting point for a proof of value: model deployment, CRDT merge, routed inference, cache hit, ONNX execution, resilient fallback, alert summaries, metrics, and packaged install checks are all reproducible today.
+
+For teams that want a focused review of one production or pre-production workflow, the [PRISM Edge AI Reliability Snapshot](COMMERCIAL_SUPPORT.md) maps failure modes, readiness/fallback gaps, ROI inputs, and a small PRISM proof in 48 hours. A fictional [sample report](SAMPLE_SNAPSHOT_REPORT.md) shows the deliverable format.
 
 ## Installation
 

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: PRISM Commercial Support
+    url: https://github.com/frxcisxo/prism/blob/main/COMMERCIAL_SUPPORT.md
+    about: Request a paid Edge AI Reliability Snapshot, audit, or implementation pilot.

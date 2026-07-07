@@ -1,0 +1,85 @@
+name: PRISM Reliability Snapshot
+description: Request a paid review of one edge AI workflow.
+title: "[Commercial Snapshot]: "
+labels:
+  - commercial
+  - snapshot
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a paid PRISM Edge AI Reliability Snapshot.
+
+        Fixed fee: USD 1,200
+        Timeline: 48 hours after payment and kickoff materials
+
+        Please do not include secrets, credentials, private keys, tokens, proprietary customer data, or sensitive production payloads in this issue.
+  - type: input
+    id: company
+    attributes:
+      label: Company / project
+      description: Who is this request for?
+      placeholder: Acme AI
+    validations:
+      required: true
+  - type: input
+    id: contact
+    attributes:
+      label: Contact email
+      description: Where should commercial scope and payment details be sent?
+      placeholder: name@example.com
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Target platform
+      multiple: true
+      options:
+        - Cloudflare Workers
+        - Workers AI
+        - Vercel Edge
+        - Netlify Edge
+        - Deno Deploy
+        - Browser AI
+        - ONNX Runtime Web
+        - WebGPU
+        - IoT / embedded
+        - Mobile / offline-first
+        - Hybrid edge/cloud inference
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow to review
+      description: Describe the single workflow you want reviewed.
+      placeholder: Requests enter a Worker, choose a regional model, use cache when possible, and fall back to cloud inference when the edge runtime is unavailable.
+    validations:
+      required: true
+  - type: textarea
+    id: concerns
+    attributes:
+      label: Reliability concerns
+      description: What worries you about readiness, routing, cache, fallback, latency, offline queues, artifact verification, or observability?
+      placeholder: Fallback behavior is unclear, cache hit rate is unknown, and support cannot easily explain degraded AI behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Business / operational context
+      description: Add approximate request volume, incident/support context, or deadline if available.
+      placeholder: About 500k requests/month; two recent degraded-mode incidents; target review before launch.
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Scope acknowledgement
+      options:
+        - label: I understand this is a paid USD 1,200 Snapshot request, not free support.
+          required: true
+        - label: I understand work starts after payment and receipt of kickoff materials.
+          required: true
+        - label: I have not included secrets, credentials, private keys, tokens, or sensitive payloads.
+          required: true

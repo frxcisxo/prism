@@ -31,6 +31,8 @@
     "examples/cloudflare-worker",
     "test/fixtures/onnx/add-one.onnx",
     "README.md",
+    "COMMERCIAL_SUPPORT.md",
+    "SAMPLE_SNAPSHOT_REPORT.md",
     "LICENSE"
   ],
   "scripts": {
@@ -62,7 +64,8 @@
     "real-time-sync",
     "llm",
     "typescript",
-    "performance"
+    "performance",
+    "reliability"
   ],
   "author": "Francisco Molina <frxcisxo@dev.com>",
   "license": "MIT",
