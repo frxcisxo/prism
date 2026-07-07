@@ -76,4 +76,10 @@ If you found PRISM through npm, review:
 - `SAMPLE_SNAPSHOT_REPORT.md` for an example deliverable
 - `README.md` for demos and validation commands
 
+You can also run the packaged checklist:
+
+```bash
+npx @frxncisxo/prism prism-reliability-check
+```
+
 Then email `frxcisxo@dev.com` with the subject `PRISM Reliability Snapshot`.

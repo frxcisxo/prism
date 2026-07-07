@@ -23,8 +23,12 @@
       "require": "./dist/inference.cjs"
     }
   },
+  "bin": {
+    "prism-reliability-check": "./bin/prism-reliability-check.js"
+  },
   "files": [
     "dist",
+    "bin",
     "demo.js",
     "demo-onnx.js",
     "examples/visual-console",

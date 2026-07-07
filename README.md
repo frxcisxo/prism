@@ -153,6 +153,17 @@ npm run example:cloudflare
 npm run example:visual
 ```
 
+## Reliability Checklist CLI
+
+PRISM includes a small checklist CLI for production and pre-production edge AI workflows:
+
+```bash
+npx @frxncisxo/prism prism-reliability-check
+npx @frxncisxo/prism prism-reliability-check --markdown
+```
+
+Use it to review readiness, fallback, cache behavior, routing state, timeouts, model artifact visibility, offline/degraded-mode semantics, and reliability/business metrics before scaling a workflow.
+
 The demos run against PRISM's compiled package. In a local checkout, run `npm run build` first after source changes. In an installed npm package, the compiled `dist` artifacts and demo files are already included.
 
 `npm run demo` runs a vertical slice: two edge nodes, model deployment, CRDT merge, routed inference, cache hit, and converged stats.
