@@ -6,3 +6,4 @@
 
 export * from './edge';
 export * from './gateway';
+export * from './client';

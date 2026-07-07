@@ -26,7 +26,7 @@ import {
   ResilientInferenceRuntime,
   ResilientRuntimeMonitor,
 } from './dist/inference.js';
-import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, PrismEdgeGateway, VercelEdgeAdapter } from './dist/edge.js';
+import { CloudflareEdgeAdapter, CloudflareKVEdgeCache, PrismEdgeClient, PrismEdgeGateway, VercelEdgeAdapter } from './dist/edge.js';
 import { readFile } from 'node:fs/promises';
 
 const addOneSha256 = 'b7d06325e6a907bdad72053370bc5d3501f599c89eb7e0c9577e556527e83eef';
@@ -581,22 +581,36 @@ try {
   const routerHealthBody = await routerHealthResponse.json();
   const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
   const openapiBody = await openapiResponse.json();
+  const client = new PrismEdgeClient({
+    baseUrl: 'https://prism.local',
+    fetch: (input, init) => gateway.handleRequest(new Request(input, init)),
+  });
+  const clientHealth = await client.health();
+  const clientOpenAPI = await client.openapi();
+  const clientInference = await client.infer({
+    id: 'gateway-client-validation',
+    modelId: 'validation-gateway-model',
+    input: 'Validate PrismEdgeClient.',
+  });
 
   if (
     !health.ok
     || !routerHealthBody.ok
+    || !clientHealth.ok
     || openapiBody.openapi !== '3.1.0'
+    || clientOpenAPI.openapi !== '3.1.0'
     || !openapiBody.paths['/infer']?.post
     || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
+    || clientInference.edgeId !== 'cloudflare-validation'
     || firstGatewayBody.data.output.region !== 'validation'
     || repeatGatewayBody.cached !== true
   ) {
     throw new Error('PrismEdgeGateway smoke check returned unexpected output');
   }
 
-  console.log('OK edge adapters and PrismEdgeGateway infer/cache/security headers');
+  console.log('OK edge adapters, PrismEdgeGateway, and PrismEdgeClient infer/cache/security headers');
 } catch (error) {
   fail('edge adapters', error);
 }

@@ -13,6 +13,7 @@ import {
   EdgeConfig,
   EdgeInferenceHandler,
 } from '../../../src/infrastructure/edge/edge';
+import { PrismEdgeClient, PrismEdgeClientError } from '../../../src/infrastructure/edge/client';
 import { PrismEdgeGateway } from '../../../src/infrastructure/edge/gateway';
 
 describe('Edge Adapters', () => {
@@ -469,6 +470,91 @@ describe('Edge Adapters', () => {
       expect(response.status).toBe(404);
       expect(body.endpoints).toEqual(['GET /health', 'POST /infer']);
       expect(spec.paths['/openapi.json']).toBeUndefined();
+    });
+  });
+
+  describe('PrismEdgeClient', () => {
+    const model = {
+      id: 'client-model',
+      name: 'Client Model',
+      version: '1.0.0',
+      format: 'remote' as const,
+      size: 1,
+      capabilities: ['client-test'],
+    };
+
+    function createClientHarness() {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'client-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'client-edge',
+        region: 'iad',
+        model,
+        routes: {
+          health: '/api/health',
+          infer: '/api/infer',
+          openapi: '/api/openapi.json',
+        },
+      });
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        routes: {
+          health: '/api/health',
+          infer: '/api/infer',
+          openapi: '/api/openapi.json',
+        },
+        headers: () => ({ authorization: 'Bearer test-token' }),
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return gateway.handleRequest(request);
+        },
+      });
+
+      return { client, requests };
+    }
+
+    it('should read health and OpenAPI from a PRISM edge gateway', async () => {
+      const { client, requests } = createClientHarness();
+
+      const health = await client.health();
+      const openapi = await client.openapi();
+
+      expect(health.ok).toBe(true);
+      expect(health.model.id).toBe(model.id);
+      expect(openapi.openapi).toBe('3.1.0');
+      expect(openapi.paths['/api/infer'].post.operationId).toBe('runPrismEdgeInference');
+      expect(requests[0].headers.get('authorization')).toBe('Bearer test-token');
+    });
+
+    it('should run inference and return the unwrapped inference result', async () => {
+      const { client } = createClientHarness();
+
+      const result = await client.infer({
+        id: 'client-1',
+        modelId: model.id,
+        input: 'Call the gateway through the client.',
+      });
+
+      expect(result.id).toBe('client-1');
+      expect(result.modelId).toBe(model.id);
+      expect(result.edgeId).toBe('client-edge');
+      expect(result.output.text).toContain('Call the gateway through the client.');
+    });
+
+    it('should throw a structured client error for invalid gateway responses', async () => {
+      const { client } = createClientHarness();
+
+      await expect(client.infer({
+        id: 'client-invalid',
+        modelId: '',
+        input: 'Invalid request.',
+      })).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        status: 400,
+        code: 'INVALID_REQUEST',
+      } satisfies Partial<PrismEdgeClientError>);
     });
   });
 });

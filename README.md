@@ -225,6 +225,29 @@ Default gateway endpoints:
 - `GET /openapi.json`
 - `POST /infer`
 
+### PrismEdgeClient
+
+Use `PrismEdgeClient` from browsers, dashboards, tests, or server code when you want a typed client for a deployed PRISM gateway.
+
+```typescript
+import { PrismEdgeClient } from '@frxncisxo/prism/edge';
+
+const client = new PrismEdgeClient({
+  baseUrl: 'https://prism-edge.example.com',
+  headers: () => ({
+    authorization: `Bearer ${process.env.PRISM_EDGE_TOKEN}`,
+  }),
+});
+
+const health = await client.health();
+const spec = await client.openapi();
+const result = await client.infer({
+  id: 'retail-alert-001',
+  modelId: 'edge-triage-small',
+  input: 'Prioritize an urgent store shelf anomaly at the edge.',
+});
+```
+
 ## Quick Start
 
 ### 1. Initialize PRISM Node
