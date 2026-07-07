@@ -62,6 +62,17 @@ function createRateLimit(env = {}) {
   };
 }
 
+function createOverloadProtection(env = {}) {
+  if (!env.PRISM_MAX_CONCURRENT_INFERENCE) {
+    return undefined;
+  }
+
+  return {
+    maxConcurrentInference: envNumber(env.PRISM_MAX_CONCURRENT_INFERENCE, 8),
+    retryAfterMs: envNumber(env.PRISM_OVERLOAD_RETRY_AFTER_MS, 1_000),
+  };
+}
+
 function createAdapter(request, env = {}) {
   const colo = request.cf?.colo || env.PRISM_REGION || 'local-dev';
   const cacheTtl = envNumber(env.PRISM_CACHE_TTL, 120);
@@ -74,6 +85,8 @@ function createAdapter(request, env = {}) {
     env.PRISM_RATE_LIMIT || 'unlimited',
     env.PRISM_RATE_WINDOW_MS || 'default-window',
     env.PRISM_RATE_LIMIT_ROUTES || 'default-rate-routes',
+    env.PRISM_MAX_CONCURRENT_INFERENCE || 'unbounded',
+    env.PRISM_OVERLOAD_RETRY_AFTER_MS || 'default-overload-retry',
   ].join(':');
 
   if (gateways.has(key)) {
@@ -94,6 +107,7 @@ function createAdapter(request, env = {}) {
     cors: true,
     auth: createAuth(env),
     rateLimit: createRateLimit(env),
+    overload: createOverloadProtection(env),
     edgeConfig: {
       platform: 'cloudflare',
       region: colo,

@@ -42,6 +42,10 @@ export interface PrismEdgeGatewayReadiness {
       ok: boolean;
       message?: string;
     };
+    capacity: {
+      ok: boolean;
+      message?: string;
+    };
   };
   stats: ReturnType<PrismCRDT['getStats']>;
 }
@@ -98,9 +102,14 @@ export interface PrismEdgeGatewayMetricsSnapshot {
     requests: number;
     unauthorized: number;
     rateLimited: number;
+    overloaded: number;
     errors: number;
     latencyMs: number;
     averageLatencyMs: number;
+  };
+  concurrency: {
+    activeInference: number;
+    maxConcurrentInference?: number;
   };
   routes: Record<PrismEdgeGatewayObservedRouteName, PrismEdgeGatewayRouteMetrics>;
 }
@@ -125,6 +134,7 @@ export interface PrismEdgeGatewayRequestEvent {
   requestId?: string;
   unauthorized: boolean;
   rateLimited: boolean;
+  overloaded: boolean;
   timestamp: number;
 }
 
@@ -147,6 +157,11 @@ export interface PrismEdgeGatewayRateLimitConfig {
   key?: (request: Request, route: PrismEdgeGatewayRouteName) => string;
 }
 
+export interface PrismEdgeGatewayOverloadConfig {
+  maxConcurrentInference: number;
+  retryAfterMs?: number;
+}
+
 export interface PrismEdgeGatewayConfig {
   nodeId: string;
   model: InferenceModel;
@@ -164,6 +179,7 @@ export interface PrismEdgeGatewayConfig {
   openapi?: PrismEdgeGatewayOpenAPIInfo | false;
   auth?: PrismEdgeGatewayAuthConfig;
   rateLimit?: PrismEdgeGatewayRateLimitConfig;
+  overload?: PrismEdgeGatewayOverloadConfig | false;
   metrics?: PrismEdgeGatewayMetricsConfig | false;
   trace?: PrismEdgeGatewayTraceConfig | false;
   onEvent?: (event: PrismEdgeGatewayEvent) => void | Promise<void>;
@@ -181,6 +197,7 @@ export class PrismEdgeGateway {
   private readonly cache: EdgeCache;
   private readonly rateLimitEntries = new Map<string, { count: number; resetAt: number }>();
   private readonly metrics: PrismEdgeGatewayMetricsSnapshot;
+  private activeInference = 0;
   private initialized = false;
   private initializePromise?: Promise<void>;
 
@@ -303,7 +320,20 @@ export class PrismEdgeGateway {
         return this.recordResponse(request, 'infer', startedAt, limited, requestId);
       }
 
-      return this.recordResponse(request, 'infer', startedAt, this.withCors(await this.handleInferenceRequest(request)), requestId);
+      const overloaded = this.overloadedResponse();
+      if (overloaded) {
+        return this.recordResponse(request, 'infer', startedAt, overloaded, requestId);
+      }
+
+      this.activeInference += 1;
+      let inferenceResponse: Response;
+      try {
+        inferenceResponse = this.withCors(await this.handleInferenceRequest(request));
+      } finally {
+        this.activeInference = Math.max(0, this.activeInference - 1);
+      }
+
+      return this.recordResponse(request, 'infer', startedAt, inferenceResponse, requestId);
     }
 
     return this.recordResponse(request, 'notFound', startedAt, this.jsonResponse({
@@ -344,11 +374,13 @@ export class PrismEdgeGateway {
           ok: false,
           message: 'Model deployment could not be verified',
         },
+        capacity: this.capacityCheck(),
       });
     }
 
     const modelDeployed = await this.prism.isModelDeployed(this.config.model.id);
-    const ready = this.initialized && modelDeployed;
+    const capacity = this.capacityCheck();
+    const ready = this.initialized && modelDeployed && capacity.ok;
 
     return this.readinessPayload(ready, {
       initialized: {
@@ -359,6 +391,7 @@ export class PrismEdgeGateway {
         ok: modelDeployed,
         ...(modelDeployed ? {} : { message: `Model ${this.config.model.id} is not deployed on this CRDT node` }),
       },
+      capacity,
     });
   }
 
@@ -367,6 +400,7 @@ export class PrismEdgeGateway {
   }
 
   getMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
+    this.refreshConcurrencyMetrics();
     return this.cloneMetricsSnapshot();
   }
 
@@ -393,6 +427,15 @@ export class PrismEdgeGateway {
       '# HELP prism_edge_gateway_rate_limited_total Total rate-limited PRISM edge gateway requests.',
       '# TYPE prism_edge_gateway_rate_limited_total counter',
       `prism_edge_gateway_rate_limited_total ${snapshot.totals.rateLimited}`,
+      '# HELP prism_edge_gateway_overloaded_total Total PRISM edge gateway requests rejected by concurrency overload protection.',
+      '# TYPE prism_edge_gateway_overloaded_total counter',
+      `prism_edge_gateway_overloaded_total ${snapshot.totals.overloaded}`,
+      '# HELP prism_edge_gateway_active_inference Current active PRISM edge inference requests.',
+      '# TYPE prism_edge_gateway_active_inference gauge',
+      `prism_edge_gateway_active_inference ${snapshot.concurrency.activeInference}`,
+      '# HELP prism_edge_gateway_max_concurrent_inference Configured PRISM edge inference concurrency limit, or 0 when disabled.',
+      '# TYPE prism_edge_gateway_max_concurrent_inference gauge',
+      `prism_edge_gateway_max_concurrent_inference ${snapshot.concurrency.maxConcurrentInference ?? 0}`,
       '# HELP prism_edge_gateway_errors_total Total PRISM edge gateway 5xx responses.',
       '# TYPE prism_edge_gateway_errors_total counter',
       `prism_edge_gateway_errors_total ${snapshot.totals.errors}`,
@@ -510,6 +553,14 @@ export class PrismEdgeGateway {
               },
               '429': {
                 description: 'Rate limit exceeded',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/EdgeErrorResponse' },
+                  },
+                },
+              },
+              '503': {
+                description: 'Gateway is overloaded or temporarily unavailable',
                 content: {
                   'application/json': {
                     schema: { $ref: '#/components/schemas/EdgeErrorResponse' },
@@ -643,10 +694,11 @@ export class PrismEdgeGateway {
               modelId: { type: 'string' },
               checks: {
                 type: 'object',
-                required: ['initialized', 'modelDeployed'],
+                required: ['initialized', 'modelDeployed', 'capacity'],
                 properties: {
                   initialized: { $ref: '#/components/schemas/ReadinessCheck' },
                   modelDeployed: { $ref: '#/components/schemas/ReadinessCheck' },
+                  capacity: { $ref: '#/components/schemas/ReadinessCheck' },
                 },
               },
               stats: { type: 'object', additionalProperties: true },
@@ -761,6 +813,64 @@ export class PrismEdgeGateway {
       modelId: this.config.model.id,
       checks,
       stats: this.prism.getStats(),
+    };
+  }
+
+  private overloadedResponse(): Response | undefined {
+    const overload = this.resolveOverloadConfig();
+
+    if (!overload || this.activeInference < overload.maxConcurrentInference) {
+      return undefined;
+    }
+
+    const retryAfterSeconds = Math.max(1, Math.ceil((overload.retryAfterMs ?? 1_000) / 1000));
+
+    return this.jsonResponse({
+      success: false,
+      error: {
+        code: 'OVERLOADED',
+        message: 'PRISM edge gateway is at inference concurrency capacity',
+      },
+      latency: 0,
+      cached: false,
+    }, 503, {
+      'retry-after': String(retryAfterSeconds),
+      'x-prism-overloaded': '1',
+      'x-prism-active-inference': String(this.activeInference),
+      'x-prism-max-concurrent-inference': String(overload.maxConcurrentInference),
+    });
+  }
+
+  private capacityCheck(): PrismEdgeGatewayReadiness['checks']['capacity'] {
+    const overload = this.resolveOverloadConfig();
+
+    if (!overload) {
+      return { ok: true };
+    }
+
+    const ok = this.activeInference < overload.maxConcurrentInference;
+    return {
+      ok,
+      ...(ok ? {} : {
+        message: `Inference concurrency is saturated at ${this.activeInference}/${overload.maxConcurrentInference}`,
+      }),
+    };
+  }
+
+  private resolveOverloadConfig(): PrismEdgeGatewayOverloadConfig | undefined {
+    if (!this.config.overload) {
+      return undefined;
+    }
+
+    const maxConcurrentInference = Math.floor(this.config.overload.maxConcurrentInference);
+
+    if (!Number.isFinite(maxConcurrentInference) || maxConcurrentInference <= 0) {
+      return undefined;
+    }
+
+    return {
+      maxConcurrentInference,
+      retryAfterMs: this.config.overload.retryAfterMs,
     };
   }
 
@@ -911,9 +1021,16 @@ export class PrismEdgeGateway {
         requests: 0,
         unauthorized: 0,
         rateLimited: 0,
+        overloaded: 0,
         errors: 0,
         latencyMs: 0,
         averageLatencyMs: 0,
+      },
+      concurrency: {
+        activeInference: 0,
+        ...(this.resolveOverloadConfig()?.maxConcurrentInference
+          ? { maxConcurrentInference: this.resolveOverloadConfig()?.maxConcurrentInference }
+          : {}),
       },
       routes: {
         health: this.emptyRouteMetrics(),
@@ -964,9 +1081,15 @@ export class PrismEdgeGateway {
       this.metrics.totals.rateLimited += 1;
     }
 
+    if (tracedResponse.headers.get('x-prism-overloaded') === '1') {
+      this.metrics.totals.overloaded += 1;
+    }
+
     if (tracedResponse.status >= 500) {
       this.metrics.totals.errors += 1;
     }
+
+    this.refreshConcurrencyMetrics();
 
     routeMetrics.requests += 1;
     routeMetrics.latencyMs += elapsed;
@@ -984,6 +1107,7 @@ export class PrismEdgeGateway {
       requestId,
       unauthorized: tracedResponse.status === 401,
       rateLimited: tracedResponse.status === 429,
+      overloaded: tracedResponse.headers.get('x-prism-overloaded') === '1',
       timestamp: Date.now(),
     });
 
@@ -1007,6 +1131,7 @@ export class PrismEdgeGateway {
       generatedAt: this.metrics.generatedAt,
       service: this.metrics.service,
       totals: { ...this.metrics.totals },
+      concurrency: { ...this.metrics.concurrency },
       routes: Object.fromEntries(
         Object.entries(this.metrics.routes).map(([route, metrics]) => [
           route,
@@ -1018,6 +1143,15 @@ export class PrismEdgeGateway {
           },
         ])
       ) as Record<PrismEdgeGatewayObservedRouteName, PrismEdgeGatewayRouteMetrics>,
+    };
+  }
+
+  private refreshConcurrencyMetrics(): void {
+    const maxConcurrentInference = this.resolveOverloadConfig()?.maxConcurrentInference;
+
+    this.metrics.concurrency = {
+      activeInference: this.activeInference,
+      ...(maxConcurrentInference ? { maxConcurrentInference } : {}),
     };
   }
 

@@ -694,6 +694,58 @@ try {
   }
   const protectedSpec = protectedGateway.getOpenAPISpec();
   const protectedMetrics = protectedGateway.toPrometheusMetrics();
+  let releaseOverload;
+  const overloadGateway = new PrismEdgeGateway({
+    nodeId: 'validation-overload-gateway',
+    platform: 'cloudflare',
+    edgeId: 'overload-validation',
+    model: {
+      ...model,
+      id: 'validation-overload-model',
+      format: 'remote',
+      size: 1,
+    },
+    overload: {
+      maxConcurrentInference: 1,
+      retryAfterMs: 2_000,
+    },
+    infer: request => new Promise(resolve => {
+      releaseOverload = resolve;
+    }).then(() => ({
+      id: request.id,
+      modelId: request.modelId,
+      output: { text: 'overload slot released' },
+      latency: 1,
+      edgeId: 'overload-validation',
+      timestamp: Date.now(),
+    })),
+  });
+  const busyInference = overloadGateway.handleRequest(new Request('https://overload.prism.local/infer', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: 'overload-busy',
+      modelId: 'validation-overload-model',
+      input: 'Occupy overload slot.',
+    }),
+  }));
+  for (let attempt = 0; attempt < 10 && !releaseOverload; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  if (!releaseOverload) {
+    throw new Error('Overload validation did not acquire the first inference slot');
+  }
+  const overloadedResponse = await overloadGateway.handleRequest(new Request('https://overload.prism.local/infer', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: 'overload-rejected',
+      modelId: 'validation-overload-model',
+      input: 'Should be rejected while saturated.',
+    }),
+  }));
+  const overloadedBody = await overloadedResponse.json();
+  releaseOverload();
+  await busyInference;
+  const overloadMetrics = overloadGateway.toPrometheusMetrics();
 
   if (
     !health.ok
@@ -731,6 +783,10 @@ try {
     || !protectedSpec.paths['/metrics']?.get
     || !protectedSpec.components.securitySchemes?.bearerAuth
     || !protectedMetrics.includes('prism_edge_gateway_rate_limited_total 1')
+    || overloadedResponse.status !== 503
+    || overloadedBody.error?.code !== 'OVERLOADED'
+    || overloadedResponse.headers.get('retry-after') !== '2'
+    || !overloadMetrics.includes('prism_edge_gateway_overloaded_total 1')
     || firstGatewayBody.data.output.region !== 'validation'
     || repeatGatewayBody.cached !== true
   ) {

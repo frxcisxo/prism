@@ -182,6 +182,8 @@ Useful Worker environment variables:
 - `PRISM_RATE_LIMIT`: enables fixed-window request limiting.
 - `PRISM_RATE_WINDOW_MS`: rate-limit window in milliseconds, default `60000`.
 - `PRISM_RATE_LIMIT_ROUTES`: comma-separated limited routes, default `infer`.
+- `PRISM_MAX_CONCURRENT_INFERENCE`: enables inference overload protection for the Worker.
+- `PRISM_OVERLOAD_RETRY_AFTER_MS`: overload retry guidance in milliseconds, default `1000`.
 - `PRISM_CACHE_TTL`: edge response cache TTL in seconds, default `120`.
 
 Example request body:
@@ -217,6 +219,10 @@ const gateway = new PrismEdgeGateway({
     limit: 120,
     windowMs: 60_000,
     // Defaults to POST /infer. Provide key() to limit by tenant/user instead of IP/header.
+  },
+  overload: {
+    maxConcurrentInference: 32,
+    retryAfterMs: 1_000,
   },
   openapi: {
     title: 'PRISM Retail Edge API',
@@ -260,7 +266,9 @@ Default gateway endpoints:
 
 Use `GET /health` for liveness and metadata, and `GET /ready` for traffic gates. Readiness returns `200` only when the gateway has initialized PRISM and verified that the configured model is deployed on the local CRDT node; otherwise it returns a structured `503` readiness payload.
 
-`gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, 5xx errors, and latency samples.
+Set `overload.maxConcurrentInference` to protect an edge node from too many active inference calls. When the node is saturated, `POST /infer` returns `503` with `OVERLOADED`, `Retry-After`, `x-prism-active-inference`, and `x-prism-max-concurrent-inference`; `GET /ready` reports capacity as not ready while saturated. This gives load balancers, dashboards, and `PrismEdgeClient` retry/fallback policies a clean backpressure signal instead of timing out under pressure.
+
+`gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, and latency samples.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
 

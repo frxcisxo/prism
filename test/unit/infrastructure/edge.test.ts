@@ -765,6 +765,72 @@ describe('Edge Adapters', () => {
       expect(otherClient.status).toBe(200);
     });
 
+    it('should reject inference overload with retry guidance and operational metrics', async () => {
+      let releaseFirst: (() => void) | undefined;
+      const events: Array<{ overloaded: boolean; status: number }> = [];
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'overload-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'overload-edge',
+        model,
+        overload: {
+          maxConcurrentInference: 1,
+          retryAfterMs: 2_500,
+        },
+        infer: request => new Promise<void>(resolve => {
+          releaseFirst = resolve;
+        }).then(() => ({
+          id: request.id,
+          modelId: request.modelId,
+          output: { text: 'released' },
+          latency: 1,
+          edgeId: 'overload-edge',
+          timestamp: Date.now(),
+        })),
+        onEvent: event => {
+          events.push({ overloaded: event.overloaded, status: event.status });
+        },
+      });
+
+      const first = gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'overload-first', modelId: model.id, input: 'Hold slot.' }),
+      }));
+      for (let attempt = 0; attempt < 10 && !releaseFirst; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(releaseFirst).toBeDefined();
+      const readinessWhileBusy = await gateway.handleRequest(new Request('https://edge.test/ready'));
+      const overloaded = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'overload-second', modelId: model.id, input: 'Should be rejected.' }),
+      }));
+      const overloadedBody = await overloaded.json();
+      const busyBody = await readinessWhileBusy.json();
+
+      releaseFirst?.();
+      const firstResponse = await first;
+      const snapshot = gateway.getMetricsSnapshot();
+      const metricsText = gateway.toPrometheusMetrics();
+
+      expect(readinessWhileBusy.status).toBe(503);
+      expect(busyBody.checks.capacity.ok).toBe(false);
+      expect(overloaded.status).toBe(503);
+      expect(overloaded.headers.get('retry-after')).toBe('3');
+      expect(overloaded.headers.get('x-prism-overloaded')).toBe('1');
+      expect(overloaded.headers.get('x-prism-active-inference')).toBe('1');
+      expect(overloaded.headers.get('x-prism-max-concurrent-inference')).toBe('1');
+      expect(overloadedBody.error.code).toBe('OVERLOADED');
+      expect(firstResponse.status).toBe(200);
+      expect(snapshot.totals.overloaded).toBe(1);
+      expect(snapshot.concurrency.activeInference).toBe(0);
+      expect(snapshot.concurrency.maxConcurrentInference).toBe(1);
+      expect(snapshot.routes.infer.status['503']).toBe(1);
+      expect(events).toContainEqual({ overloaded: true, status: 503 });
+      expect(metricsText).toContain('prism_edge_gateway_overloaded_total 1');
+      expect(metricsText).toContain('prism_edge_gateway_max_concurrent_inference 1');
+    });
+
     it('should expose gateway traffic metrics as snapshots and Prometheus text', async () => {
       const gateway = new PrismEdgeGateway({
         nodeId: 'metrics-gateway-node',

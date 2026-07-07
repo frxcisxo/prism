@@ -7,6 +7,8 @@ const env = {
   PRISM_EDGE_TOKEN: 'local-worker-token',
   PRISM_RATE_LIMIT: '3',
   PRISM_RATE_WINDOW_MS: '60000',
+  PRISM_MAX_CONCURRENT_INFERENCE: '2',
+  PRISM_OVERLOAD_RETRY_AFTER_MS: '2500',
   PRISM_CACHE: {
     async get(key, options) {
       const entry = kvStore.get(key);
@@ -123,6 +125,7 @@ const metrics = await worker.fetch(request('/metrics', {
 assert(metrics.includes('prism_edge_gateway_requests_total'), 'metrics endpoint did not expose gateway request counter');
 assert(metrics.includes('prism_edge_gateway_unauthorized_total 2'), 'metrics endpoint did not count unauthorized inference and metrics calls');
 assert(metrics.includes('prism_edge_gateway_rate_limited_total 1'), 'metrics endpoint did not count rate-limited inference');
+assert(metrics.includes('prism_edge_gateway_max_concurrent_inference 2'), 'metrics endpoint did not expose overload concurrency limit');
 console.log('OK protected metrics expose operational counters');
 
 console.log('\nAll Cloudflare Worker checks passed.');
