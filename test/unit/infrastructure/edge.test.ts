@@ -1035,6 +1035,94 @@ describe('Edge Adapters', () => {
       expect(requests[0].headers.get('authorization')).toBe('Bearer test-token');
     });
 
+    it('should wait until readiness recovers from temporary 503 responses', async () => {
+      const responses = [
+        new Response(JSON.stringify({
+          ok: false,
+          ready: false,
+          service: 'wait-gateway',
+          initialized: true,
+          platform: 'cloudflare',
+          modelId: model.id,
+          checks: {
+            initialized: { ok: true },
+            modelDeployed: { ok: true },
+            capacity: { ok: false, message: 'Inference concurrency is saturated at 1/1' },
+          },
+          stats: {},
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+        new Response(JSON.stringify({
+          ok: true,
+          ready: true,
+          service: 'wait-gateway',
+          initialized: true,
+          platform: 'cloudflare',
+          modelId: model.id,
+          checks: {
+            initialized: { ok: true },
+            modelDeployed: { ok: true },
+            capacity: { ok: true },
+          },
+          stats: {},
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ];
+      const delays: number[] = [];
+      const fetchImpl = vi.fn().mockImplementation(async () => responses.shift()!);
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: fetchImpl,
+        sleep: async ms => {
+          delays.push(ms);
+        },
+      });
+
+      const readiness = await client.waitUntilReady({
+        timeoutMs: 1_000,
+        intervalMs: 25,
+      });
+
+      expect(readiness.ready).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(delays).toEqual([25]);
+    });
+
+    it('should time out while waiting for readiness', async () => {
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        fetch: async () => new Response(JSON.stringify({
+          ok: false,
+          ready: false,
+          service: 'wait-timeout-gateway',
+          initialized: true,
+          platform: 'cloudflare',
+          modelId: model.id,
+          checks: {
+            initialized: { ok: true },
+            modelDeployed: { ok: true },
+            capacity: { ok: false },
+          },
+          stats: {},
+        }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        }),
+      });
+
+      await expect(client.waitUntilReady({
+        timeoutMs: 0,
+        intervalMs: 0,
+      })).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        code: 'READY_TIMEOUT',
+      } satisfies Partial<PrismEdgeClientError>);
+    });
+
     it('should run inference and return the unwrapped inference result', async () => {
       const { client } = createClientHarness();
 

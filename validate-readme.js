@@ -603,6 +603,10 @@ try {
   });
   const clientHealth = await client.health();
   const clientReadiness = await client.ready();
+  const clientWaitReadiness = await client.waitUntilReady({
+    timeoutMs: 1_000,
+    intervalMs: 0,
+  });
   const clientOpenAPI = await client.openapi();
   const clientMetrics = await client.metrics();
   const clientEnvelope = await client.inferEnvelope({
@@ -759,6 +763,7 @@ try {
     || !gatewayEvents.some(event => event.route === 'infer' && event.status === 200)
     || !clientHealth.ok
     || clientReadiness.ready !== true
+    || clientWaitReadiness.ready !== true
     || clientEnvelope.success !== true
     || clientEnvelope.cached !== false
     || clientEnvelope.requestId !== 'validation-client-trace-id'

@@ -38,6 +38,12 @@ export interface PrismEdgeClientTraceConfig {
   requestId?: string | (() => string | Promise<string>);
 }
 
+export interface PrismEdgeClientWaitUntilReadyConfig {
+  timeoutMs?: number;
+  intervalMs?: number;
+  signal?: AbortSignal;
+}
+
 export type PrismEdgeInferenceEnvelope = EdgeResponse<InferenceResult> & {
   requestId?: string;
 };
@@ -75,6 +81,64 @@ export class PrismEdgeClient {
 
   async ready(): Promise<PrismEdgeGatewayReadiness> {
     return this.getJson<PrismEdgeGatewayReadiness>(this.route('ready'));
+  }
+
+  async waitUntilReady(
+    options: PrismEdgeClientWaitUntilReadyConfig = {}
+  ): Promise<PrismEdgeGatewayReadiness> {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? 30_000);
+    const intervalMs = Math.max(0, options.intervalMs ?? 500);
+    const startedAt = Date.now();
+    let lastError: unknown;
+
+    while (Date.now() - startedAt <= timeoutMs) {
+      if (options.signal?.aborted) {
+        throw new PrismEdgeClientError(
+          'PRISM edge readiness wait was aborted',
+          0,
+          'ABORTED',
+          lastError
+        );
+      }
+
+      try {
+        const readiness = await this.ready();
+
+        if (readiness.ready) {
+          return readiness;
+        }
+
+        lastError = readiness;
+      } catch (error) {
+        if (error instanceof PrismEdgeClientError && this.isReadinessPayload(error.response)) {
+          const readiness = error.response;
+
+          if (readiness.ready) {
+            return readiness;
+          }
+
+          lastError = readiness;
+        } else {
+          lastError = error;
+        }
+      }
+
+      const elapsedMs = Date.now() - startedAt;
+      const remainingMs = timeoutMs - elapsedMs;
+
+      if (remainingMs <= 0) {
+        break;
+      }
+
+      await this.sleep(Math.min(intervalMs, remainingMs));
+    }
+
+    throw new PrismEdgeClientError(
+      `PRISM edge was not ready within ${timeoutMs}ms`,
+      0,
+      'READY_TIMEOUT',
+      lastError
+    );
   }
 
   async openapi(): Promise<PrismEdgeGatewayOpenAPISpec> {
@@ -390,6 +454,17 @@ export class PrismEdgeClient {
 
   private responseRequestId(response: Response): string | undefined {
     return response.headers.get(this.traceHeaderName()) ?? undefined;
+  }
+
+  private isReadinessPayload(value: unknown): value is PrismEdgeGatewayReadiness {
+    return Boolean(
+      value
+      && typeof value === 'object'
+      && 'ready' in value
+      && typeof (value as { ready?: unknown }).ready === 'boolean'
+      && 'checks' in value
+      && typeof (value as { checks?: unknown }).checks === 'object'
+    );
   }
 
   private route(name: 'health' | 'ready' | 'infer' | 'metrics' | 'openapi'): string {
