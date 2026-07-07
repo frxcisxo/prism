@@ -471,6 +471,42 @@ describe('Edge Adapters', () => {
       expect(body.endpoints).toEqual(['GET /health', 'POST /infer']);
       expect(spec.paths['/openapi.json']).toBeUndefined();
     });
+
+    it('should protect inference with bearer auth while leaving health public by default', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'auth-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'auth-edge',
+        model,
+        auth: {
+          bearerToken: 'secret-token',
+        },
+      });
+
+      const health = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const denied = await gateway.handleRequest(inferenceRequest('auth-denied', 'No token.'));
+      const allowed = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret-token' },
+        body: JSON.stringify({ id: 'auth-allowed', modelId: model.id, input: 'With token.' }),
+      }));
+      const openapi = gateway.getOpenAPISpec();
+      const deniedBody = await denied.json();
+      const allowedBody = await allowed.json();
+
+      expect(health.status).toBe(200);
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get('www-authenticate')).toBe('Bearer realm="prism-edge"');
+      expect(deniedBody.error.code).toBe('UNAUTHORIZED');
+      expect(allowed.status).toBe(200);
+      expect(allowedBody.success).toBe(true);
+      expect(openapi.components.securitySchemes?.bearerAuth).toEqual({
+        type: 'http',
+        scheme: 'bearer',
+      });
+      expect(openapi.paths['/infer'].post.security).toEqual([{ bearerAuth: [] }]);
+      expect(openapi.paths['/health'].get.security).toBeUndefined();
+    });
   });
 
   describe('PrismEdgeClient', () => {
@@ -505,6 +541,30 @@ describe('Edge Adapters', () => {
           openapi: '/api/openapi.json',
         },
         headers: () => ({ authorization: 'Bearer test-token' }),
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return gateway.handleRequest(request);
+        },
+      });
+
+      return { client, requests };
+    }
+
+    function createProtectedClientHarness(token?: string) {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'protected-client-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'protected-client-edge',
+        model,
+        auth: {
+          bearerToken: 'client-token',
+        },
+      });
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        ...(token ? { bearerToken: token } : {}),
         fetch: async (input, init) => {
           const request = new Request(input, init);
           requests.push(request);
@@ -554,6 +614,29 @@ describe('Edge Adapters', () => {
         name: 'PrismEdgeClientError',
         status: 400,
         code: 'INVALID_REQUEST',
+      } satisfies Partial<PrismEdgeClientError>);
+    });
+
+    it('should send bearerToken and surface unauthorized responses', async () => {
+      const allowed = createProtectedClientHarness('client-token');
+      const denied = createProtectedClientHarness();
+
+      const result = await allowed.client.infer({
+        id: 'client-auth',
+        modelId: model.id,
+        input: 'Authorized client call.',
+      });
+
+      expect(result.edgeId).toBe('protected-client-edge');
+      expect(allowed.requests[0].headers.get('authorization')).toBe('Bearer client-token');
+      await expect(denied.client.infer({
+        id: 'client-auth-denied',
+        modelId: model.id,
+        input: 'Unauthorized client call.',
+      })).rejects.toMatchObject({
+        name: 'PrismEdgeClientError',
+        status: 401,
+        code: 'UNAUTHORIZED',
       } satisfies Partial<PrismEdgeClientError>);
     });
   });

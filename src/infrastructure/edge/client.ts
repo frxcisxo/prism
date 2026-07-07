@@ -5,6 +5,7 @@ import type { PrismEdgeGatewayHealth, PrismEdgeGatewayOpenAPISpec } from './gate
 export interface PrismEdgeClientConfig {
   baseUrl: string;
   fetch?: typeof fetch;
+  bearerToken?: string | (() => string | Promise<string>);
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
   routes?: {
     health?: string;
@@ -115,9 +116,19 @@ export class PrismEdgeClient {
   }
 
   private async resolveHeaders(): Promise<HeadersInit> {
-    return typeof this.config.headers === 'function'
+    const resolvedHeaders = typeof this.config.headers === 'function'
       ? this.config.headers()
       : this.config.headers ?? {};
+    const headers = new Headers(await resolvedHeaders);
+    const token = typeof this.config.bearerToken === 'function'
+      ? await this.config.bearerToken()
+      : this.config.bearerToken;
+
+    if (token && !headers.has('authorization')) {
+      headers.set('authorization', `Bearer ${token}`);
+    }
+
+    return headers;
   }
 
   private route(name: 'health' | 'infer' | 'openapi'): string {

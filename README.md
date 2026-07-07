@@ -198,6 +198,10 @@ const gateway = new PrismEdgeGateway({
   edgeId: 'cloudflare-iad',
   cacheTtl: 120,
   cors: true,
+  auth: {
+    bearerToken: process.env.PRISM_EDGE_TOKEN!,
+    // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/openapi.
+  },
   openapi: {
     title: 'PRISM Retail Edge API',
     version: '1.0.0',
@@ -234,9 +238,7 @@ import { PrismEdgeClient } from '@frxncisxo/prism/edge';
 
 const client = new PrismEdgeClient({
   baseUrl: 'https://prism-edge.example.com',
-  headers: () => ({
-    authorization: `Bearer ${process.env.PRISM_EDGE_TOKEN}`,
-  }),
+  bearerToken: () => process.env.PRISM_EDGE_TOKEN!,
 });
 
 const health = await client.health();

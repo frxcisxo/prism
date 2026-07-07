@@ -53,7 +53,20 @@ export interface PrismEdgeGatewayOpenAPISpec {
   paths: Record<string, Record<string, unknown>>;
   components: {
     schemas: Record<string, unknown>;
+    securitySchemes?: Record<string, unknown>;
   };
+}
+
+export type PrismEdgeGatewayRouteName = 'health' | 'infer' | 'openapi';
+
+export interface PrismEdgeGatewayAuthConfig {
+  bearerToken?: string | string[];
+  authorize?: (
+    request: Request,
+    route: PrismEdgeGatewayRouteName
+  ) => boolean | Promise<boolean>;
+  protectedRoutes?: PrismEdgeGatewayRouteName[];
+  realm?: string;
 }
 
 export interface PrismEdgeGatewayConfig {
@@ -71,6 +84,7 @@ export interface PrismEdgeGatewayConfig {
   routes?: PrismEdgeGatewayRoutes;
   cors?: boolean | PrismEdgeGatewayCorsConfig;
   openapi?: PrismEdgeGatewayOpenAPIInfo | false;
+  auth?: PrismEdgeGatewayAuthConfig;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -129,14 +143,29 @@ export class PrismEdgeGateway {
       request.method === 'GET'
       && (url.pathname === routes.health || (routes.rootHealth && url.pathname === '/'))
     ) {
+      const unauthorized = await this.unauthorizedResponse(request, 'health');
+      if (unauthorized) {
+        return unauthorized;
+      }
+
       return this.jsonResponse(await this.health());
     }
 
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
+      const unauthorized = await this.unauthorizedResponse(request, 'openapi');
+      if (unauthorized) {
+        return unauthorized;
+      }
+
       return this.jsonResponse(this.getOpenAPISpec());
     }
 
     if (request.method === 'POST' && url.pathname === routes.infer) {
+      const unauthorized = await this.unauthorizedResponse(request, 'infer');
+      if (unauthorized) {
+        return unauthorized;
+      }
+
       return this.withCors(await this.handleInferenceRequest(request));
     }
 
@@ -183,6 +212,7 @@ export class PrismEdgeGateway {
           get: {
             summary: 'Read PRISM edge gateway health',
             operationId: 'getPrismEdgeHealth',
+            ...(this.openapiSecurity('health')),
             responses: {
               '200': {
                 description: 'Gateway health, model, endpoints, and CRDT stats',
@@ -199,6 +229,7 @@ export class PrismEdgeGateway {
           post: {
             summary: 'Run PRISM edge inference',
             operationId: 'runPrismEdgeInference',
+            ...(this.openapiSecurity('infer')),
             requestBody: {
               required: true,
               content: {
@@ -232,6 +263,7 @@ export class PrismEdgeGateway {
             get: {
               summary: 'Read this OpenAPI document',
               operationId: 'getPrismEdgeOpenAPI',
+              ...(this.openapiSecurity('openapi')),
               responses: {
                 '200': {
                   description: 'OpenAPI 3.1 document for this gateway',
@@ -320,6 +352,14 @@ export class PrismEdgeGateway {
             },
           },
         },
+        ...(this.config.auth ? {
+          securitySchemes: {
+            bearerAuth: {
+              type: 'http',
+              scheme: 'bearer',
+            },
+          },
+        } : {}),
       },
     };
   }
@@ -393,12 +433,78 @@ export class PrismEdgeGateway {
     return typeof version === 'string' && version.length > 0 ? version : '1.0.0';
   }
 
-  private jsonResponse(body: unknown, status = 200): Response {
+  private async unauthorizedResponse(
+    request: Request,
+    route: PrismEdgeGatewayRouteName
+  ): Promise<Response | undefined> {
+    if (!(await this.isAuthorized(request, route))) {
+      return this.jsonResponse({
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Unauthorized',
+        },
+        latency: 0,
+        cached: false,
+      }, 401, {
+        'www-authenticate': `Bearer realm="${this.config.auth?.realm ?? 'prism-edge'}"`,
+      });
+    }
+
+    return undefined;
+  }
+
+  private async isAuthorized(request: Request, route: PrismEdgeGatewayRouteName): Promise<boolean> {
+    const auth = this.config.auth;
+
+    if (!auth || !this.isProtectedRoute(route)) {
+      return true;
+    }
+
+    if (auth.authorize && await auth.authorize(request, route)) {
+      return true;
+    }
+
+    if (!auth.bearerToken) {
+      return false;
+    }
+
+    const header = request.headers.get('authorization') ?? '';
+    const token = header.match(/^Bearer\s+(.+)$/i)?.[1];
+
+    if (!token) {
+      return false;
+    }
+
+    const allowed = Array.isArray(auth.bearerToken) ? auth.bearerToken : [auth.bearerToken];
+    return allowed.includes(token);
+  }
+
+  private isProtectedRoute(route: PrismEdgeGatewayRouteName): boolean {
+    if (!this.config.auth) {
+      return false;
+    }
+
+    return (this.config.auth.protectedRoutes ?? ['infer']).includes(route);
+  }
+
+  private openapiSecurity(route: PrismEdgeGatewayRouteName): Record<string, unknown> {
+    return this.isProtectedRoute(route)
+      ? { security: [{ bearerAuth: [] }] }
+      : {};
+  }
+
+  private jsonResponse(
+    body: unknown,
+    status = 200,
+    extraHeaders: Record<string, string> = {}
+  ): Response {
     return new Response(JSON.stringify(body), {
       status,
       headers: {
         'content-type': 'application/json; charset=utf-8',
         ...this.corsHeaders(),
+        ...extraHeaders,
       },
     });
   }

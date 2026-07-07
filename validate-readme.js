@@ -592,6 +592,39 @@ try {
     modelId: 'validation-gateway-model',
     input: 'Validate PrismEdgeClient.',
   });
+  const protectedGateway = new PrismEdgeGateway({
+    nodeId: 'validation-protected-gateway',
+    platform: 'cloudflare',
+    edgeId: 'protected-validation',
+    model: {
+      ...model,
+      id: 'validation-protected-model',
+      format: 'remote',
+      size: 1,
+    },
+    auth: {
+      bearerToken: 'validation-token',
+    },
+  });
+  const protectedClient = new PrismEdgeClient({
+    baseUrl: 'https://protected.prism.local',
+    bearerToken: 'validation-token',
+    fetch: (input, init) => protectedGateway.handleRequest(new Request(input, init)),
+  });
+  const deniedProtectedResponse = await protectedGateway.handleRequest(new Request('https://protected.prism.local/infer', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: 'protected-denied',
+      modelId: 'validation-protected-model',
+      input: 'Missing token.',
+    }),
+  }));
+  const protectedInference = await protectedClient.infer({
+    id: 'protected-allowed',
+    modelId: 'validation-protected-model',
+    input: 'Authorized PrismEdgeClient.',
+  });
+  const protectedSpec = protectedGateway.getOpenAPISpec();
 
   if (
     !health.ok
@@ -604,6 +637,10 @@ try {
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
     || clientInference.edgeId !== 'cloudflare-validation'
+    || deniedProtectedResponse.status !== 401
+    || protectedInference.edgeId !== 'protected-validation'
+    || !protectedSpec.paths['/infer']?.post
+    || !protectedSpec.components.securitySchemes?.bearerAuth
     || firstGatewayBody.data.output.region !== 'validation'
     || repeatGatewayBody.cached !== true
   ) {
