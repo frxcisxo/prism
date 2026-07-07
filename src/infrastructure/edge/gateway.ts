@@ -87,6 +87,11 @@ export interface PrismEdgeGatewayMetricsConfig {
   prometheus?: boolean;
 }
 
+export interface PrismEdgeGatewayTraceConfig {
+  header?: string;
+  generateId?: (request: Request) => string;
+}
+
 export interface PrismEdgeGatewayAuthConfig {
   bearerToken?: string | string[];
   authorize?: (
@@ -122,6 +127,7 @@ export interface PrismEdgeGatewayConfig {
   auth?: PrismEdgeGatewayAuthConfig;
   rateLimit?: PrismEdgeGatewayRateLimitConfig;
   metrics?: PrismEdgeGatewayMetricsConfig | false;
+  trace?: PrismEdgeGatewayTraceConfig | false;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -173,11 +179,12 @@ export class PrismEdgeGateway {
 
   async handleRequest(request: Request): Promise<Response> {
     const startedAt = this.now();
+    const requestId = this.resolveRequestId(request);
     const url = new URL(request.url);
     const routes = this.resolveRoutes();
 
     if (request.method === 'OPTIONS') {
-      return this.recordResponse('preflight', startedAt, this.jsonResponse({ ok: true }));
+      return this.recordResponse('preflight', startedAt, this.jsonResponse({ ok: true }), requestId);
     }
 
     if (
@@ -186,63 +193,63 @@ export class PrismEdgeGateway {
     ) {
       const unauthorized = await this.unauthorizedResponse(request, 'health');
       if (unauthorized) {
-        return this.recordResponse('health', startedAt, unauthorized);
+        return this.recordResponse('health', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'health');
       if (limited) {
-        return this.recordResponse('health', startedAt, limited);
+        return this.recordResponse('health', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('health', startedAt, this.jsonResponse(await this.health()));
+      return this.recordResponse('health', startedAt, this.jsonResponse(await this.health()), requestId);
     }
 
     if (this.config.openapi !== false && request.method === 'GET' && url.pathname === routes.openapi) {
       const unauthorized = await this.unauthorizedResponse(request, 'openapi');
       if (unauthorized) {
-        return this.recordResponse('openapi', startedAt, unauthorized);
+        return this.recordResponse('openapi', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'openapi');
       if (limited) {
-        return this.recordResponse('openapi', startedAt, limited);
+        return this.recordResponse('openapi', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('openapi', startedAt, this.jsonResponse(this.getOpenAPISpec()));
+      return this.recordResponse('openapi', startedAt, this.jsonResponse(this.getOpenAPISpec()), requestId);
     }
 
     if (this.metricsEnabled() && request.method === 'GET' && url.pathname === routes.metrics) {
       const unauthorized = await this.unauthorizedResponse(request, 'metrics');
       if (unauthorized) {
-        return this.recordResponse('metrics', startedAt, unauthorized);
+        return this.recordResponse('metrics', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'metrics');
       if (limited) {
-        return this.recordResponse('metrics', startedAt, limited);
+        return this.recordResponse('metrics', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('metrics', startedAt, this.metricsResponse());
+      return this.recordResponse('metrics', startedAt, this.metricsResponse(), requestId);
     }
 
     if (request.method === 'POST' && url.pathname === routes.infer) {
       const unauthorized = await this.unauthorizedResponse(request, 'infer');
       if (unauthorized) {
-        return this.recordResponse('infer', startedAt, unauthorized);
+        return this.recordResponse('infer', startedAt, unauthorized, requestId);
       }
 
       const limited = this.rateLimitResponse(request, 'infer');
       if (limited) {
-        return this.recordResponse('infer', startedAt, limited);
+        return this.recordResponse('infer', startedAt, limited, requestId);
       }
 
-      return this.recordResponse('infer', startedAt, this.withCors(await this.handleInferenceRequest(request)));
+      return this.recordResponse('infer', startedAt, this.withCors(await this.handleInferenceRequest(request)), requestId);
     }
 
     return this.recordResponse('notFound', startedAt, this.jsonResponse({
       error: 'Not found',
       endpoints: this.routeList(routes),
-    }, 404));
+    }, 404), requestId);
   }
 
   async health(): Promise<PrismEdgeGatewayHealth> {
@@ -768,10 +775,12 @@ export class PrismEdgeGateway {
   private recordResponse(
     route: PrismEdgeGatewayObservedRouteName,
     startedAt: number,
-    response: Response
+    response: Response,
+    requestId?: string
   ): Response {
     const elapsed = Math.max(0, this.now() - startedAt);
-    const status = String(response.status);
+    const tracedResponse = this.withTrace(response, requestId);
+    const status = String(tracedResponse.status);
     const routeMetrics = this.metrics.routes[route];
 
     this.metrics.generatedAt = Date.now();
@@ -782,15 +791,15 @@ export class PrismEdgeGateway {
       this.metrics.totals.requests
     );
 
-    if (response.status === 401) {
+    if (tracedResponse.status === 401) {
       this.metrics.totals.unauthorized += 1;
     }
 
-    if (response.status === 429) {
+    if (tracedResponse.status === 429) {
       this.metrics.totals.rateLimited += 1;
     }
 
-    if (response.status >= 500) {
+    if (tracedResponse.status >= 500) {
       this.metrics.totals.errors += 1;
     }
 
@@ -799,7 +808,7 @@ export class PrismEdgeGateway {
     routeMetrics.averageLatencyMs = this.average(routeMetrics.latencyMs, routeMetrics.requests);
     routeMetrics.status[status] = (routeMetrics.status[status] ?? 0) + 1;
 
-    return response;
+    return tracedResponse;
   }
 
   private cloneMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
@@ -833,6 +842,52 @@ export class PrismEdgeGateway {
     return value.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
   }
 
+  private resolveRequestId(request: Request): string | undefined {
+    if (this.config.trace === false) {
+      return undefined;
+    }
+
+    const header = this.traceHeaderName();
+    const provided = request.headers.get(header);
+
+    if (provided && provided.trim().length > 0) {
+      return provided.trim();
+    }
+
+    return this.config.trace?.generateId?.(request) ?? this.generateRequestId();
+  }
+
+  private generateRequestId(): string {
+    const cryptoApi = globalThis.crypto;
+
+    if (cryptoApi?.randomUUID) {
+      return cryptoApi.randomUUID();
+    }
+
+    return `prism-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  private traceHeaderName(): string {
+    return this.config.trace && this.config.trace.header
+      ? this.config.trace.header.toLowerCase()
+      : 'x-prism-request-id';
+  }
+
+  private withTrace(response: Response, requestId?: string): Response {
+    if (!requestId) {
+      return response;
+    }
+
+    const headers = new Headers(response.headers);
+    headers.set(this.traceHeaderName(), requestId);
+
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
   private withCors(response: Response): Response {
     const headers = new Headers(response.headers);
 
@@ -853,11 +908,16 @@ export class PrismEdgeGateway {
     }
 
     const cors = this.config.cors === true ? {} : this.config.cors;
+    const defaultHeaders = [
+      'content-type',
+      'authorization',
+      ...(this.config.trace === false ? [] : [this.traceHeaderName()]),
+    ];
 
     return {
       'access-control-allow-origin': cors.origin ?? '*',
       'access-control-allow-methods': (cors.methods ?? ['GET', 'POST', 'OPTIONS']).join(','),
-      'access-control-allow-headers': (cors.headers ?? ['content-type', 'authorization']).join(','),
+      'access-control-allow-headers': (cors.headers ?? defaultHeaders).join(','),
     };
   }
 }

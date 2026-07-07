@@ -225,6 +225,10 @@ const gateway = new PrismEdgeGateway({
     // Enabled by default. Set metrics: false if metrics are exposed through another private path.
     prometheus: true,
   },
+  trace: {
+    // Defaults to x-prism-request-id and preserves incoming IDs for log correlation.
+    header: 'x-prism-request-id',
+  },
   model: {
     id: 'edge-triage-small',
     name: 'Edge Triage Small',
@@ -250,6 +254,8 @@ Default gateway endpoints:
 - `POST /infer`
 
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, 5xx errors, and latency samples.
+
+Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
 
 ### PrismEdgeClient
 

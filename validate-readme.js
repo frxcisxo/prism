@@ -577,7 +577,9 @@ try {
   }));
   const firstGatewayBody = await firstGatewayResponse.json();
   const repeatGatewayBody = await repeatGatewayResponse.json();
-  const routerHealthResponse = await gateway.handleRequest(new Request('https://prism.local/health'));
+  const routerHealthResponse = await gateway.handleRequest(new Request('https://prism.local/health', {
+    headers: { 'x-prism-request-id': 'validation-trace-id' },
+  }));
   const routerHealthBody = await routerHealthResponse.json();
   const openapiResponse = await gateway.handleRequest(new Request('https://prism.local/openapi.json'));
   const openapiBody = await openapiResponse.json();
@@ -676,6 +678,7 @@ try {
   if (
     !health.ok
     || !routerHealthBody.ok
+    || routerHealthResponse.headers.get('x-prism-request-id') !== 'validation-trace-id'
     || !clientHealth.ok
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'

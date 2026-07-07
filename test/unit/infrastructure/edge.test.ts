@@ -420,6 +420,51 @@ describe('Edge Adapters', () => {
       expect(notFoundBody.endpoints).toEqual(['GET /health', 'POST /infer', 'GET /openapi.json', 'GET /metrics']);
       expect(inference.headers.get('access-control-allow-origin')).toBe('*');
       expect(health.headers.get('access-control-allow-methods')).toBe('GET,POST,OPTIONS');
+      expect(health.headers.get('x-prism-request-id')).toBeTruthy();
+      expect(preflight.headers.get('access-control-allow-headers')).toContain('x-prism-request-id');
+    });
+
+    it('should preserve or customize gateway request trace headers', async () => {
+      const defaultGateway = new PrismEdgeGateway({
+        nodeId: 'trace-gateway-node',
+        platform: 'cloudflare',
+        model,
+      });
+      const customGateway = new PrismEdgeGateway({
+        nodeId: 'custom-trace-gateway-node',
+        platform: 'cloudflare',
+        model,
+        trace: {
+          header: 'x-correlation-id',
+          generateId: () => 'generated-correlation-id',
+        },
+      });
+
+      const preserved = await defaultGateway.handleRequest(new Request('https://edge.test/health', {
+        headers: { 'x-prism-request-id': 'external-trace-1' },
+      }));
+      const generated = await customGateway.handleRequest(new Request('https://edge.test/health'));
+
+      expect(preserved.headers.get('x-prism-request-id')).toBe('external-trace-1');
+      expect(generated.headers.get('x-correlation-id')).toBe('generated-correlation-id');
+    });
+
+    it('should allow disabling gateway request trace headers', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'disabled-trace-gateway-node',
+        platform: 'cloudflare',
+        model,
+        cors: true,
+        trace: false,
+      });
+
+      const health = await gateway.handleRequest(new Request('https://edge.test/health'));
+      const preflight = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'OPTIONS',
+      }));
+
+      expect(health.headers.has('x-prism-request-id')).toBe(false);
+      expect(preflight.headers.get('access-control-allow-headers')).not.toContain('x-prism-request-id');
     });
 
     it('should support custom HTTP router paths', async () => {
