@@ -286,6 +286,11 @@ const client = new PrismEdgeClient({
 const health = await client.health();
 const spec = await client.openapi();
 const metrics = await client.metrics();
+const envelope = await client.inferEnvelope({
+  id: 'retail-alert-envelope-001',
+  modelId: 'edge-triage-small',
+  input: 'Return the full operational envelope.',
+});
 const result = await client.infer({
   id: 'retail-alert-001',
   modelId: 'edge-triage-small',
@@ -296,6 +301,8 @@ const result = await client.infer({
 Client retries are opt-in and target transient conditions by default: `408`, `425`, `429`, `500`, `502`, `503`, and `504`, plus network failures and timeouts. `Retry-After` is respected and capped by `maxRetryAfterMs` so dashboards and edge jobs do not hang unexpectedly.
 
 Set `trace.requestId` to attach `x-prism-request-id` to client calls. Retries reuse the same trace ID for the logical request, so gateway logs and client errors remain correlated.
+
+Use `inferEnvelope()` when a dashboard or test needs the full edge envelope, including `latency`, `cached`, `success`, and any structured gateway error. Use `infer()` when application code only needs the unwrapped `InferenceResult`.
 
 ## Quick Start
 

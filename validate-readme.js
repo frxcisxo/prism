@@ -602,6 +602,11 @@ try {
   const clientHealth = await client.health();
   const clientOpenAPI = await client.openapi();
   const clientMetrics = await client.metrics();
+  const clientEnvelope = await client.inferEnvelope({
+    id: 'gateway-client-envelope-validation',
+    modelId: 'validation-gateway-model',
+    input: 'Validate PrismEdgeClient envelope.',
+  });
   const clientInference = await client.infer({
     id: 'gateway-client-validation',
     modelId: 'validation-gateway-model',
@@ -695,12 +700,15 @@ try {
     || !gatewayEvents.some(event => event.route === 'health' && event.requestId === 'validation-trace-id')
     || !gatewayEvents.some(event => event.route === 'infer' && event.status === 200)
     || !clientHealth.ok
+    || clientEnvelope.success !== true
+    || clientEnvelope.cached !== false
+    || clientEnvelope.data.edgeId !== 'cloudflare-validation'
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'
     || !openapiBody.paths['/infer']?.post
     || !openapiBody.paths['/metrics']?.get
     || !clientMetrics.includes('prism_edge_gateway_requests_total')
-    || gatewayMetricsSnapshot.routes.infer.status['200'] !== 1
+    || gatewayMetricsSnapshot.routes.infer.status['200'] < 2
     || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'

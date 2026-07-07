@@ -917,6 +917,29 @@ describe('Edge Adapters', () => {
       expect(result.output.text).toContain('Call the gateway through the client.');
     });
 
+    it('should return the full inference envelope for operational clients', async () => {
+      const { client } = createClientHarness();
+
+      const first = await client.inferEnvelope({
+        id: 'client-envelope-1',
+        modelId: model.id,
+        input: 'Return the full envelope.',
+      });
+      const repeat = await client.inferEnvelope({
+        id: 'client-envelope-2',
+        modelId: model.id,
+        input: 'Return the full envelope.',
+      });
+
+      expect(first.success).toBe(true);
+      expect(first.cached).toBe(false);
+      expect(first.latency).toBeGreaterThanOrEqual(0);
+      expect(first.data?.edgeId).toBe('client-edge');
+      expect(repeat.success).toBe(true);
+      expect(repeat.cached).toBe(true);
+      expect(repeat.data?.cached).toBe(true);
+    });
+
     it('should throw a structured client error for invalid gateway responses', async () => {
       const { client } = createClientHarness();
 

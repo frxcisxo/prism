@@ -36,6 +36,8 @@ export interface PrismEdgeClientTraceConfig {
   requestId?: string | (() => string | Promise<string>);
 }
 
+export type PrismEdgeInferenceEnvelope = EdgeResponse<InferenceResult>;
+
 export class PrismEdgeClientError extends Error {
   constructor(
     message: string,
@@ -75,10 +77,7 @@ export class PrismEdgeClient {
   }
 
   async infer(request: InferenceRequest): Promise<InferenceResult> {
-    const envelope = await this.requestJson<EdgeResponse<InferenceResult>>(this.route('infer'), {
-      method: 'POST',
-      body: JSON.stringify(request),
-    });
+    const envelope = await this.inferEnvelope(request);
 
     if (!envelope.success || !envelope.data) {
       throw new PrismEdgeClientError(
@@ -90,6 +89,13 @@ export class PrismEdgeClient {
     }
 
     return envelope.data;
+  }
+
+  async inferEnvelope(request: InferenceRequest): Promise<PrismEdgeInferenceEnvelope> {
+    return this.requestJson<PrismEdgeInferenceEnvelope>(this.route('infer'), {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
   }
 
   private async getJson<T>(path: string): Promise<T> {
