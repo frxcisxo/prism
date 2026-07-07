@@ -702,6 +702,7 @@ try {
     || !clientHealth.ok
     || clientEnvelope.success !== true
     || clientEnvelope.cached !== false
+    || clientEnvelope.requestId !== 'validation-client-trace-id'
     || clientEnvelope.data.edgeId !== 'cloudflare-validation'
     || openapiBody.openapi !== '3.1.0'
     || clientOpenAPI.openapi !== '3.1.0'

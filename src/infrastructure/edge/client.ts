@@ -36,14 +36,17 @@ export interface PrismEdgeClientTraceConfig {
   requestId?: string | (() => string | Promise<string>);
 }
 
-export type PrismEdgeInferenceEnvelope = EdgeResponse<InferenceResult>;
+export type PrismEdgeInferenceEnvelope = EdgeResponse<InferenceResult> & {
+  requestId?: string;
+};
 
 export class PrismEdgeClientError extends Error {
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
-    readonly response?: unknown
+    readonly response?: unknown,
+    readonly requestId?: string
   ) {
     super(message);
     this.name = 'PrismEdgeClientError';
@@ -84,7 +87,8 @@ export class PrismEdgeClient {
         envelope.error?.message ?? 'PRISM edge inference failed',
         200,
         envelope.error?.code,
-        envelope
+        envelope,
+        envelope.requestId
       );
     }
 
@@ -92,10 +96,15 @@ export class PrismEdgeClient {
   }
 
   async inferEnvelope(request: InferenceRequest): Promise<PrismEdgeInferenceEnvelope> {
-    return this.requestJson<PrismEdgeInferenceEnvelope>(this.route('infer'), {
+    const result = await this.requestJsonWithResponse<PrismEdgeInferenceEnvelope>(this.route('infer'), {
       method: 'POST',
       body: JSON.stringify(request),
     });
+
+    return {
+      ...result.payload,
+      ...(result.requestId ? { requestId: result.requestId } : {}),
+    };
   }
 
   private async getJson<T>(path: string): Promise<T> {
@@ -103,7 +112,15 @@ export class PrismEdgeClient {
   }
 
   private async requestJson<T>(path: string, init: RequestInit): Promise<T> {
+    return (await this.requestJsonWithResponse<T>(path, init)).payload;
+  }
+
+  private async requestJsonWithResponse<T>(
+    path: string,
+    init: RequestInit
+  ): Promise<{ payload: T; response: Response; requestId?: string }> {
     const response = await this.request(path, init);
+    const requestId = this.responseRequestId(response);
     const payload = await this.readJson(response);
 
     if (!response.ok) {
@@ -112,11 +129,16 @@ export class PrismEdgeClient {
         error?.message ?? `PRISM edge request failed with HTTP ${response.status}`,
         response.status,
         error?.code,
-        payload
+        payload,
+        requestId
       );
     }
 
-    return payload as T;
+    return {
+      payload: payload as T,
+      response,
+      requestId,
+    };
   }
 
   private async requestText(path: string, init: RequestInit): Promise<string> {
@@ -128,7 +150,8 @@ export class PrismEdgeClient {
         `PRISM edge request failed with HTTP ${response.status}`,
         response.status,
         undefined,
-        text
+        text,
+        this.responseRequestId(response)
       );
     }
 
@@ -296,7 +319,8 @@ export class PrismEdgeClient {
         'PRISM edge response was not valid JSON',
         response.status,
         'INVALID_JSON',
-        text
+        text,
+        this.responseRequestId(response)
       );
     }
   }
@@ -356,6 +380,10 @@ export class PrismEdgeClient {
     return this.config.trace && this.config.trace.header
       ? this.config.trace.header.toLowerCase()
       : 'x-prism-request-id';
+  }
+
+  private responseRequestId(response: Response): string | undefined {
+    return response.headers.get(this.traceHeaderName()) ?? undefined;
   }
 
   private route(name: 'health' | 'infer' | 'metrics' | 'openapi'): string {

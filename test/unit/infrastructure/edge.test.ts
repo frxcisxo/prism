@@ -934,6 +934,7 @@ describe('Edge Adapters', () => {
       expect(first.success).toBe(true);
       expect(first.cached).toBe(false);
       expect(first.latency).toBeGreaterThanOrEqual(0);
+      expect(first.requestId).toBeTruthy();
       expect(first.data?.edgeId).toBe('client-edge');
       expect(repeat.success).toBe(true);
       expect(repeat.cached).toBe(true);
@@ -951,6 +952,7 @@ describe('Edge Adapters', () => {
         name: 'PrismEdgeClientError',
         status: 400,
         code: 'INVALID_REQUEST',
+        requestId: expect.any(String),
       } satisfies Partial<PrismEdgeClientError>);
     });
 

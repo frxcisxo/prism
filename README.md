@@ -302,7 +302,7 @@ Client retries are opt-in and target transient conditions by default: `408`, `42
 
 Set `trace.requestId` to attach `x-prism-request-id` to client calls. Retries reuse the same trace ID for the logical request, so gateway logs and client errors remain correlated.
 
-Use `inferEnvelope()` when a dashboard or test needs the full edge envelope, including `latency`, `cached`, `success`, and any structured gateway error. Use `infer()` when application code only needs the unwrapped `InferenceResult`.
+Use `inferEnvelope()` when a dashboard or test needs the full edge envelope, including `latency`, `cached`, `success`, `requestId`, and any structured gateway error. `PrismEdgeClientError` also carries `requestId` when the gateway returned one. Use `infer()` when application code only needs the unwrapped `InferenceResult`.
 
 ## Quick Start
 
