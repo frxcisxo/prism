@@ -507,6 +507,72 @@ describe('Edge Adapters', () => {
       expect(openapi.paths['/infer'].post.security).toEqual([{ bearerAuth: [] }]);
       expect(openapi.paths['/health'].get.security).toBeUndefined();
     });
+
+    it('should rate limit inference by client key with retry headers', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'rate-limit-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'rate-limit-edge',
+        model,
+        rateLimit: {
+          limit: 1,
+          windowMs: 60_000,
+        },
+      });
+      const first = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.10' },
+        body: JSON.stringify({ id: 'rate-1', modelId: model.id, input: 'First request.' }),
+      }));
+      const limited = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.10' },
+        body: JSON.stringify({ id: 'rate-2', modelId: model.id, input: 'Second request.' }),
+      }));
+      const otherClient = await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.11' },
+        body: JSON.stringify({ id: 'rate-3', modelId: model.id, input: 'Other client.' }),
+      }));
+      const limitedBody = await limited.json();
+
+      expect(first.status).toBe(200);
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBeTruthy();
+      expect(limited.headers.get('x-ratelimit-limit')).toBe('1');
+      expect(limited.headers.get('x-ratelimit-remaining')).toBe('0');
+      expect(limitedBody.error.code).toBe('RATE_LIMITED');
+      expect(otherClient.status).toBe(200);
+    });
+
+    it('should support custom rate limit keys and routes', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'custom-rate-limit-gateway-node',
+        platform: 'cloudflare',
+        model,
+        rateLimit: {
+          limit: 1,
+          windowMs: 60_000,
+          routes: ['health'],
+          key: request => request.headers.get('x-tenant-id') ?? 'default',
+        },
+      });
+      const first = await gateway.handleRequest(new Request('https://edge.test/health', {
+        headers: { 'x-tenant-id': 'tenant-a' },
+      }));
+      const limited = await gateway.handleRequest(new Request('https://edge.test/health', {
+        headers: { 'x-tenant-id': 'tenant-a' },
+      }));
+      const otherTenant = await gateway.handleRequest(new Request('https://edge.test/health', {
+        headers: { 'x-tenant-id': 'tenant-b' },
+      }));
+      const infer = await gateway.handleRequest(inferenceRequest('custom-rate-infer', 'Infer remains unlimited.'));
+
+      expect(first.status).toBe(200);
+      expect(limited.status).toBe(429);
+      expect(otherTenant.status).toBe(200);
+      expect(infer.status).toBe(200);
+    });
   });
 
   describe('PrismEdgeClient', () => {

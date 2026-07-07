@@ -69,6 +69,13 @@ export interface PrismEdgeGatewayAuthConfig {
   realm?: string;
 }
 
+export interface PrismEdgeGatewayRateLimitConfig {
+  limit: number;
+  windowMs: number;
+  routes?: PrismEdgeGatewayRouteName[];
+  key?: (request: Request, route: PrismEdgeGatewayRouteName) => string;
+}
+
 export interface PrismEdgeGatewayConfig {
   nodeId: string;
   model: InferenceModel;
@@ -85,6 +92,7 @@ export interface PrismEdgeGatewayConfig {
   cors?: boolean | PrismEdgeGatewayCorsConfig;
   openapi?: PrismEdgeGatewayOpenAPIInfo | false;
   auth?: PrismEdgeGatewayAuthConfig;
+  rateLimit?: PrismEdgeGatewayRateLimitConfig;
   infer?: EdgeInferenceHandler;
   enrichOutput?: (
     result: InferenceResult,
@@ -97,6 +105,7 @@ export class PrismEdgeGateway {
   private readonly prism: PrismCRDT;
   private readonly capabilities: EdgeNode['capabilities'];
   private readonly cache: EdgeCache;
+  private readonly rateLimitEntries = new Map<string, { count: number; resetAt: number }>();
   private initialized = false;
   private initializePromise?: Promise<void>;
 
@@ -148,6 +157,11 @@ export class PrismEdgeGateway {
         return unauthorized;
       }
 
+      const limited = this.rateLimitResponse(request, 'health');
+      if (limited) {
+        return limited;
+      }
+
       return this.jsonResponse(await this.health());
     }
 
@@ -157,6 +171,11 @@ export class PrismEdgeGateway {
         return unauthorized;
       }
 
+      const limited = this.rateLimitResponse(request, 'openapi');
+      if (limited) {
+        return limited;
+      }
+
       return this.jsonResponse(this.getOpenAPISpec());
     }
 
@@ -164,6 +183,11 @@ export class PrismEdgeGateway {
       const unauthorized = await this.unauthorizedResponse(request, 'infer');
       if (unauthorized) {
         return unauthorized;
+      }
+
+      const limited = this.rateLimitResponse(request, 'infer');
+      if (limited) {
+        return limited;
       }
 
       return this.withCors(await this.handleInferenceRequest(request));
@@ -249,6 +273,22 @@ export class PrismEdgeGateway {
               },
               '400': {
                 description: 'Invalid inference request',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/EdgeErrorResponse' },
+                  },
+                },
+              },
+              '401': {
+                description: 'Unauthorized request',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/EdgeErrorResponse' },
+                  },
+                },
+              },
+              '429': {
+                description: 'Rate limit exceeded',
                 content: {
                   'application/json': {
                     schema: { $ref: '#/components/schemas/EdgeErrorResponse' },
@@ -492,6 +532,55 @@ export class PrismEdgeGateway {
     return this.isProtectedRoute(route)
       ? { security: [{ bearerAuth: [] }] }
       : {};
+  }
+
+  private rateLimitResponse(
+    request: Request,
+    route: PrismEdgeGatewayRouteName
+  ): Response | undefined {
+    const rateLimit = this.config.rateLimit;
+
+    if (!rateLimit || !(rateLimit.routes ?? ['infer']).includes(route)) {
+      return undefined;
+    }
+
+    const now = Date.now();
+    const key = `${route}:${rateLimit.key?.(request, route) ?? this.defaultRateLimitKey(request)}`;
+    const current = this.rateLimitEntries.get(key);
+    const entry = current && current.resetAt > now
+      ? current
+      : { count: 0, resetAt: now + rateLimit.windowMs };
+
+    if (entry.count >= rateLimit.limit) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((entry.resetAt - now) / 1000));
+
+      return this.jsonResponse({
+        success: false,
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Rate limit exceeded',
+        },
+        latency: 0,
+        cached: false,
+      }, 429, {
+        'retry-after': String(retryAfterSeconds),
+        'x-ratelimit-limit': String(rateLimit.limit),
+        'x-ratelimit-remaining': '0',
+        'x-ratelimit-reset': String(entry.resetAt),
+      });
+    }
+
+    entry.count += 1;
+    this.rateLimitEntries.set(key, entry);
+
+    return undefined;
+  }
+
+  private defaultRateLimitKey(request: Request): string {
+    return request.headers.get('cf-connecting-ip')
+      ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+      ?? request.headers.get('authorization')
+      ?? 'anonymous';
   }
 
   private jsonResponse(

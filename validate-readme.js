@@ -605,6 +605,11 @@ try {
     auth: {
       bearerToken: 'validation-token',
     },
+    rateLimit: {
+      limit: 1,
+      windowMs: 60_000,
+      key: request => request.headers.get('authorization') ?? 'anonymous',
+    },
   });
   const protectedClient = new PrismEdgeClient({
     baseUrl: 'https://protected.prism.local',
@@ -624,6 +629,16 @@ try {
     modelId: 'validation-protected-model',
     input: 'Authorized PrismEdgeClient.',
   });
+  let rateLimited = false;
+  try {
+    await protectedClient.infer({
+      id: 'protected-limited',
+      modelId: 'validation-protected-model',
+      input: 'Rate limited PrismEdgeClient.',
+    });
+  } catch (error) {
+    rateLimited = error?.status === 429 && error?.code === 'RATE_LIMITED';
+  }
   const protectedSpec = protectedGateway.getOpenAPISpec();
 
   if (
@@ -639,6 +654,7 @@ try {
     || clientInference.edgeId !== 'cloudflare-validation'
     || deniedProtectedResponse.status !== 401
     || protectedInference.edgeId !== 'protected-validation'
+    || !rateLimited
     || !protectedSpec.paths['/infer']?.post
     || !protectedSpec.components.securitySchemes?.bearerAuth
     || firstGatewayBody.data.output.region !== 'validation'

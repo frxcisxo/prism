@@ -202,6 +202,11 @@ const gateway = new PrismEdgeGateway({
     bearerToken: process.env.PRISM_EDGE_TOKEN!,
     // Defaults to protecting POST /infer. Add protectedRoutes to also protect health/openapi.
   },
+  rateLimit: {
+    limit: 120,
+    windowMs: 60_000,
+    // Defaults to POST /infer. Provide key() to limit by tenant/user instead of IP/header.
+  },
   openapi: {
     title: 'PRISM Retail Edge API',
     version: '1.0.0',
