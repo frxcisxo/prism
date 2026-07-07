@@ -738,6 +738,9 @@ describe('Edge Adapters', () => {
           limit: 1,
           windowMs: 60_000,
         },
+        metrics: {
+          latencyBucketsMs: [1, 10, 100],
+        },
       });
       const first = await gateway.handleRequest(new Request('https://edge.test/infer', {
         method: 'POST',
@@ -936,6 +939,7 @@ describe('Edge Adapters', () => {
       expect(snapshot.totals.unauthorized).toBe(1);
       expect(snapshot.totals.rateLimited).toBe(1);
       expect(snapshot.routes.health.status['200']).toBe(1);
+      expect(snapshot.routes.health.latencyBucketsMs['100']).toBe(1);
       expect(snapshot.routes.infer.status['401']).toBe(1);
       expect(snapshot.routes.infer.status['200']).toBe(1);
       expect(snapshot.routes.infer.status['429']).toBe(1);
@@ -945,6 +949,10 @@ describe('Edge Adapters', () => {
       expect(metricsText).toContain('prism_edge_gateway_route_requests_total{route="infer",status="429"} 1');
       expect(metricsText).toContain('prism_edge_gateway_unauthorized_total 1');
       expect(metricsText).toContain('prism_edge_gateway_rate_limited_total 1');
+      expect(metricsText).toContain('# TYPE prism_edge_gateway_request_duration_ms histogram');
+      expect(metricsText).toContain('prism_edge_gateway_request_duration_ms_bucket{route="health",le="100"} 1');
+      expect(metricsText).toContain('prism_edge_gateway_request_duration_ms_bucket{route="infer",le="+Inf"} 3');
+      expect(metricsText).toContain('prism_edge_gateway_request_duration_ms_count{route="metrics"} 0');
     });
 
     it('should support custom and disabled metrics routes', async () => {

@@ -812,7 +812,9 @@ try {
     || !openapiBody.paths['/ready']?.get
     || !openapiBody.paths['/metrics']?.get
     || !clientMetrics.includes('prism_edge_gateway_requests_total')
+    || !clientMetrics.includes('prism_edge_gateway_request_duration_ms_bucket')
     || gatewayMetricsSnapshot.routes.infer.status['200'] < 2
+    || !gatewayMetricsSnapshot.routes.infer.latencyBucketsMs['5000']
     || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'

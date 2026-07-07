@@ -238,6 +238,7 @@ const gateway = new PrismEdgeGateway({
   metrics: {
     // Enabled by default. Set metrics: false if metrics are exposed through another private path.
     prometheus: true,
+    latencyBucketsMs: [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000],
   },
   trace: {
     // Defaults to x-prism-request-id and preserves incoming IDs for log correlation.
@@ -277,7 +278,7 @@ Set `overload.maxConcurrentInference` to protect an edge node from too many acti
 
 Enable `idempotency` when clients may retry inference after network failures or timeouts. Repeated `POST /infer` calls with the same `Idempotency-Key` share the same in-flight work and later return the stored response until the TTL expires. Responses include `x-prism-idempotency: created`, `replayed`, or `hit` so dashboards and tests can see whether work was executed or deduplicated.
 
-`gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, and latency samples.
+`gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, latency samples, and Prometheus histograms through `prism_edge_gateway_request_duration_ms_bucket` for SLO dashboards.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
 

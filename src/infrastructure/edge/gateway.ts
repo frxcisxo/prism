@@ -92,6 +92,7 @@ export interface PrismEdgeGatewayRouteMetrics {
   requests: number;
   latencyMs: number;
   averageLatencyMs: number;
+  latencyBucketsMs: Record<string, number>;
   status: Record<string, number>;
 }
 
@@ -116,6 +117,7 @@ export interface PrismEdgeGatewayMetricsSnapshot {
 
 export interface PrismEdgeGatewayMetricsConfig {
   prometheus?: boolean;
+  latencyBucketsMs?: number[];
 }
 
 export interface PrismEdgeGatewayTraceConfig {
@@ -463,6 +465,23 @@ export class PrismEdgeGateway {
 
     for (const [route, metrics] of Object.entries(snapshot.routes)) {
       lines.push(`prism_edge_gateway_latency_ms_count{route="${this.metricLabel(route)}"} ${metrics.requests}`);
+    }
+
+    lines.push(
+      '# HELP prism_edge_gateway_request_duration_ms PRISM edge gateway request duration histogram in milliseconds by route.',
+      '# TYPE prism_edge_gateway_request_duration_ms histogram',
+    );
+
+    for (const [route, metrics] of Object.entries(snapshot.routes)) {
+      for (const [bucket, count] of Object.entries(metrics.latencyBucketsMs)) {
+        lines.push(`prism_edge_gateway_request_duration_ms_bucket{route="${this.metricLabel(route)}",le="${this.metricLabel(bucket)}"} ${count}`);
+      }
+
+      lines.push(
+        `prism_edge_gateway_request_duration_ms_bucket{route="${this.metricLabel(route)}",le="+Inf"} ${metrics.requests}`,
+        `prism_edge_gateway_request_duration_ms_sum{route="${this.metricLabel(route)}"} ${metrics.latencyMs}`,
+        `prism_edge_gateway_request_duration_ms_count{route="${this.metricLabel(route)}"} ${metrics.requests}`
+      );
     }
 
     return `${lines.join('\n')}\n`;
@@ -1195,6 +1214,9 @@ export class PrismEdgeGateway {
       requests: 0,
       latencyMs: 0,
       averageLatencyMs: 0,
+      latencyBucketsMs: Object.fromEntries(
+        this.latencyBucketsMs().map(bucket => [String(bucket), 0])
+      ),
       status: {},
     };
   }
@@ -1240,6 +1262,7 @@ export class PrismEdgeGateway {
     routeMetrics.requests += 1;
     routeMetrics.latencyMs += elapsed;
     routeMetrics.averageLatencyMs = this.average(routeMetrics.latencyMs, routeMetrics.requests);
+    this.recordLatencyBucket(routeMetrics, elapsed);
     routeMetrics.status[status] = (routeMetrics.status[status] ?? 0) + 1;
 
     this.emitEvent({
@@ -1285,6 +1308,7 @@ export class PrismEdgeGateway {
             requests: metrics.requests,
             latencyMs: metrics.latencyMs,
             averageLatencyMs: metrics.averageLatencyMs,
+            latencyBucketsMs: { ...metrics.latencyBucketsMs },
             status: { ...metrics.status },
           },
         ])
@@ -1303,6 +1327,31 @@ export class PrismEdgeGateway {
 
   private average(total: number, samples: number): number {
     return samples === 0 ? 0 : total / samples;
+  }
+
+  private latencyBucketsMs(): number[] {
+    const configured = this.config.metrics === false
+      ? undefined
+      : this.config.metrics?.latencyBucketsMs;
+    const buckets = configured && configured.length > 0
+      ? configured
+      : [1, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000];
+
+    return Array.from(new Set(
+      buckets
+        .filter(bucket => Number.isFinite(bucket) && bucket > 0)
+        .map(bucket => Number(bucket))
+        .sort((first, second) => first - second)
+    ));
+  }
+
+  private recordLatencyBucket(metrics: PrismEdgeGatewayRouteMetrics, latencyMs: number): void {
+    for (const bucket of this.latencyBucketsMs()) {
+      if (latencyMs <= bucket) {
+        const key = String(bucket);
+        metrics.latencyBucketsMs[key] = (metrics.latencyBucketsMs[key] ?? 0) + 1;
+      }
+    }
   }
 
   private now(): number {
