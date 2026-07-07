@@ -162,6 +162,12 @@ export interface PrismEdgeGatewayOverloadConfig {
   retryAfterMs?: number;
 }
 
+export interface PrismEdgeGatewayIdempotencyConfig {
+  header?: string;
+  ttlMs?: number;
+  key?: (request: Request) => string | undefined;
+}
+
 export interface PrismEdgeGatewayConfig {
   nodeId: string;
   model: InferenceModel;
@@ -180,6 +186,7 @@ export interface PrismEdgeGatewayConfig {
   auth?: PrismEdgeGatewayAuthConfig;
   rateLimit?: PrismEdgeGatewayRateLimitConfig;
   overload?: PrismEdgeGatewayOverloadConfig | false;
+  idempotency?: PrismEdgeGatewayIdempotencyConfig | false;
   metrics?: PrismEdgeGatewayMetricsConfig | false;
   trace?: PrismEdgeGatewayTraceConfig | false;
   onEvent?: (event: PrismEdgeGatewayEvent) => void | Promise<void>;
@@ -191,11 +198,26 @@ export interface PrismEdgeGatewayConfig {
   ) => InferenceResult | Promise<InferenceResult>;
 }
 
+interface PrismEdgeGatewayStoredResponse {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  body: string;
+  expiresAt: number;
+}
+
+interface PrismEdgeGatewayIdempotencyEntry {
+  expiresAt: number;
+  pending?: Promise<PrismEdgeGatewayStoredResponse>;
+  response?: PrismEdgeGatewayStoredResponse;
+}
+
 export class PrismEdgeGateway {
   private readonly prism: PrismCRDT;
   private readonly capabilities: EdgeNode['capabilities'];
   private readonly cache: EdgeCache;
   private readonly rateLimitEntries = new Map<string, { count: number; resetAt: number }>();
+  private readonly idempotencyEntries = new Map<string, PrismEdgeGatewayIdempotencyEntry>();
   private readonly metrics: PrismEdgeGatewayMetricsSnapshot;
   private activeInference = 0;
   private initialized = false;
@@ -320,20 +342,7 @@ export class PrismEdgeGateway {
         return this.recordResponse(request, 'infer', startedAt, limited, requestId);
       }
 
-      const overloaded = this.overloadedResponse();
-      if (overloaded) {
-        return this.recordResponse(request, 'infer', startedAt, overloaded, requestId);
-      }
-
-      this.activeInference += 1;
-      let inferenceResponse: Response;
-      try {
-        inferenceResponse = this.withCors(await this.handleInferenceRequest(request));
-      } finally {
-        this.activeInference = Math.max(0, this.activeInference - 1);
-      }
-
-      return this.recordResponse(request, 'infer', startedAt, inferenceResponse, requestId);
+      return this.recordResponse(request, 'infer', startedAt, await this.handleIdempotentInference(request), requestId);
     }
 
     return this.recordResponse(request, 'notFound', startedAt, this.jsonResponse({
@@ -839,6 +848,143 @@ export class PrismEdgeGateway {
       'x-prism-active-inference': String(this.activeInference),
       'x-prism-max-concurrent-inference': String(overload.maxConcurrentInference),
     });
+  }
+
+  private async handleIdempotentInference(request: Request): Promise<Response> {
+    const key = this.resolveIdempotencyKey(request);
+
+    if (!key) {
+      const overloaded = this.overloadedResponse();
+      if (overloaded) {
+        return overloaded;
+      }
+
+      this.activeInference += 1;
+      try {
+        return this.withCors(await this.handleInferenceRequest(request));
+      } finally {
+        this.activeInference = Math.max(0, this.activeInference - 1);
+      }
+    }
+
+    this.pruneIdempotencyEntries();
+
+    const existing = this.idempotencyEntries.get(key);
+
+    if (existing?.response && existing.response.expiresAt > Date.now()) {
+      return this.restoreIdempotencyResponse(existing.response, 'hit');
+    }
+
+    if (existing?.pending && existing.expiresAt > Date.now()) {
+      const stored = await existing.pending;
+      return this.restoreIdempotencyResponse(stored, 'replayed');
+    }
+
+    const overloaded = this.overloadedResponse();
+    if (overloaded) {
+      return overloaded;
+    }
+
+    const ttlMs = this.resolveIdempotencyTtlMs();
+    const expiresAt = Date.now() + ttlMs;
+    const pending = this.executeAndStoreIdempotencyResponse(request, expiresAt);
+    this.idempotencyEntries.set(key, {
+      expiresAt,
+      pending,
+    });
+
+    try {
+      const stored = await pending;
+      this.idempotencyEntries.set(key, {
+        expiresAt: stored.expiresAt,
+        response: stored,
+      });
+      return this.restoreIdempotencyResponse(stored, 'created');
+    } catch (error) {
+      this.idempotencyEntries.delete(key);
+      throw error;
+    }
+  }
+
+  private async executeAndStoreIdempotencyResponse(
+    request: Request,
+    expiresAt: number
+  ): Promise<PrismEdgeGatewayStoredResponse> {
+    this.activeInference += 1;
+
+    try {
+      return await this.captureIdempotencyResponse(
+        this.withCors(await this.handleInferenceRequest(request)),
+        expiresAt
+      );
+    } finally {
+      this.activeInference = Math.max(0, this.activeInference - 1);
+    }
+  }
+
+  private async captureIdempotencyResponse(
+    response: Response,
+    expiresAt: number
+  ): Promise<PrismEdgeGatewayStoredResponse> {
+    return {
+      status: response.status,
+      statusText: response.statusText,
+      headers: Array.from(response.headers.entries()),
+      body: await response.text(),
+      expiresAt,
+    };
+  }
+
+  private restoreIdempotencyResponse(
+    stored: PrismEdgeGatewayStoredResponse,
+    status: 'created' | 'hit' | 'replayed'
+  ): Response {
+    const headers = new Headers(stored.headers);
+    headers.set('x-prism-idempotency', status);
+
+    return new Response(stored.body, {
+      status: stored.status,
+      statusText: stored.statusText,
+      headers,
+    });
+  }
+
+  private resolveIdempotencyKey(request: Request): string | undefined {
+    const idempotency = this.config.idempotency;
+
+    if (!idempotency) {
+      return undefined;
+    }
+
+    const key = idempotency.key?.(request)
+      ?? request.headers.get(this.idempotencyHeaderName())
+      ?? undefined;
+
+    return key?.trim() || undefined;
+  }
+
+  private idempotencyHeaderName(): string {
+    return this.config.idempotency && this.config.idempotency.header
+      ? this.config.idempotency.header.toLowerCase()
+      : 'idempotency-key';
+  }
+
+  private resolveIdempotencyTtlMs(): number {
+    const ttlMs = this.config.idempotency && this.config.idempotency.ttlMs !== undefined
+      ? this.config.idempotency.ttlMs
+      : 60_000;
+
+    return Math.max(1, ttlMs);
+  }
+
+  private pruneIdempotencyEntries(): void {
+    const now = Date.now();
+
+    for (const [key, entry] of this.idempotencyEntries.entries()) {
+      if (entry.expiresAt <= now) {
+        this.idempotencyEntries.delete(key);
+      }
+    }
   }
 
   private capacityCheck(): PrismEdgeGatewayReadiness['checks']['capacity'] {

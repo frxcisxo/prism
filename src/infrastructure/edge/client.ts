@@ -14,6 +14,7 @@ export interface PrismEdgeClientConfig {
   timeoutMs?: number;
   retry?: PrismEdgeClientRetryConfig | false;
   trace?: PrismEdgeClientTraceConfig | false;
+  idempotency?: PrismEdgeClientIdempotencyConfig | false;
   sleep?: (ms: number) => Promise<void>;
   routes?: {
     health?: string;
@@ -36,6 +37,11 @@ export interface PrismEdgeClientRetryConfig {
 export interface PrismEdgeClientTraceConfig {
   header?: string;
   requestId?: string | (() => string | Promise<string>);
+}
+
+export interface PrismEdgeClientIdempotencyConfig {
+  header?: string;
+  key?: string | ((request: InferenceRequest) => string | Promise<string>);
 }
 
 export interface PrismEdgeClientWaitUntilReadyConfig {
@@ -166,8 +172,14 @@ export class PrismEdgeClient {
   }
 
   async inferEnvelope(request: InferenceRequest): Promise<PrismEdgeInferenceEnvelope> {
+    const idempotencyKey = await this.resolveIdempotencyKey(request);
     const result = await this.requestJsonWithResponse<PrismEdgeInferenceEnvelope>(this.route('infer'), {
       method: 'POST',
+      ...(idempotencyKey ? {
+        headers: {
+          [this.idempotencyHeaderName()]: idempotencyKey,
+        },
+      } : {}),
       body: JSON.stringify(request),
     });
 
@@ -277,6 +289,13 @@ export class PrismEdgeClient {
 
   private async requestOnce(path: string, init: RequestInit, traceId?: string): Promise<Response> {
     const headers = new Headers(await this.resolveHeaders(traceId));
+    const requestHeaders = new Headers(init.headers);
+
+    for (const [key, value] of requestHeaders.entries()) {
+      if (!headers.has(key)) {
+        headers.set(key, value);
+      }
+    }
 
     if (init.body !== undefined && !headers.has('content-type')) {
       headers.set('content-type', 'application/json');
@@ -450,6 +469,25 @@ export class PrismEdgeClient {
     return this.config.trace && this.config.trace.header
       ? this.config.trace.header.toLowerCase()
       : 'x-prism-request-id';
+  }
+
+  private async resolveIdempotencyKey(request: InferenceRequest): Promise<string | undefined> {
+    if (this.config.idempotency === false || !this.config.idempotency) {
+      return undefined;
+    }
+
+    const configured = this.config.idempotency.key;
+    const key = typeof configured === 'function'
+      ? await configured(request)
+      : configured ?? request.id;
+
+    return key.trim() || undefined;
+  }
+
+  private idempotencyHeaderName(): string {
+    return this.config.idempotency && this.config.idempotency.header
+      ? this.config.idempotency.header.toLowerCase()
+      : 'idempotency-key';
   }
 
   private responseRequestId(response: Response): string | undefined {

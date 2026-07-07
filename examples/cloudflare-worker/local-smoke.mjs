@@ -9,6 +9,8 @@ const env = {
   PRISM_RATE_WINDOW_MS: '60000',
   PRISM_MAX_CONCURRENT_INFERENCE: '2',
   PRISM_OVERLOAD_RETRY_AFTER_MS: '2500',
+  PRISM_IDEMPOTENCY: '1',
+  PRISM_IDEMPOTENCY_TTL_MS: '60000',
   PRISM_CACHE: {
     async get(key, options) {
       const entry = kvStore.get(key);

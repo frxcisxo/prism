@@ -750,6 +750,44 @@ try {
   releaseOverload();
   await busyInference;
   const overloadMetrics = overloadGateway.toPrometheusMetrics();
+  let idempotentCalls = 0;
+  const idempotentGateway = new PrismEdgeGateway({
+    nodeId: 'validation-idempotent-gateway',
+    platform: 'cloudflare',
+    edgeId: 'idempotent-validation',
+    model: {
+      ...model,
+      id: 'validation-idempotent-model',
+      format: 'remote',
+      size: 1,
+    },
+    idempotency: {
+      ttlMs: 60_000,
+    },
+    infer: request => {
+      idempotentCalls += 1;
+      return Promise.resolve({
+        id: request.id,
+        modelId: request.modelId,
+        output: { text: 'idempotent output' },
+        latency: 1,
+        edgeId: 'idempotent-validation',
+        timestamp: Date.now(),
+      });
+    },
+  });
+  const idempotentRequest = id => new Request('https://idempotent.prism.local/infer', {
+    method: 'POST',
+    headers: { 'idempotency-key': 'validation-idempotency-key' },
+    body: JSON.stringify({
+      id,
+      modelId: 'validation-idempotent-model',
+      input: 'Deduplicate validation request.',
+    }),
+  });
+  const idempotentFirst = await idempotentGateway.handleRequest(idempotentRequest('idempotent-first'));
+  const idempotentHit = await idempotentGateway.handleRequest(idempotentRequest('idempotent-second'));
+  const idempotentHitBody = await idempotentHit.json();
 
   if (
     !health.ok
@@ -792,6 +830,10 @@ try {
     || overloadedBody.error?.code !== 'OVERLOADED'
     || overloadedResponse.headers.get('retry-after') !== '2'
     || !overloadMetrics.includes('prism_edge_gateway_overloaded_total 1')
+    || idempotentCalls !== 1
+    || idempotentFirst.headers.get('x-prism-idempotency') !== 'created'
+    || idempotentHit.headers.get('x-prism-idempotency') !== 'hit'
+    || idempotentHitBody.data.id !== 'idempotent-first'
     || firstGatewayBody.data.output.region !== 'validation'
     || repeatGatewayBody.cached !== true
   ) {

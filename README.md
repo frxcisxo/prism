@@ -184,6 +184,9 @@ Useful Worker environment variables:
 - `PRISM_RATE_LIMIT_ROUTES`: comma-separated limited routes, default `infer`.
 - `PRISM_MAX_CONCURRENT_INFERENCE`: enables inference overload protection for the Worker.
 - `PRISM_OVERLOAD_RETRY_AFTER_MS`: overload retry guidance in milliseconds, default `1000`.
+- `PRISM_IDEMPOTENCY`: enables in-memory idempotency for repeated `POST /infer` calls with the same key.
+- `PRISM_IDEMPOTENCY_HEADER`: idempotency header name, default `idempotency-key`.
+- `PRISM_IDEMPOTENCY_TTL_MS`: idempotent response TTL in milliseconds, default `60000`.
 - `PRISM_CACHE_TTL`: edge response cache TTL in seconds, default `120`.
 
 Example request body:
@@ -223,6 +226,10 @@ const gateway = new PrismEdgeGateway({
   overload: {
     maxConcurrentInference: 32,
     retryAfterMs: 1_000,
+  },
+  idempotency: {
+    ttlMs: 60_000,
+    // Defaults to reading the Idempotency-Key request header.
   },
   openapi: {
     title: 'PRISM Retail Edge API',
@@ -268,6 +275,8 @@ Use `GET /health` for liveness and metadata, and `GET /ready` for traffic gates.
 
 Set `overload.maxConcurrentInference` to protect an edge node from too many active inference calls. When the node is saturated, `POST /infer` returns `503` with `OVERLOADED`, `Retry-After`, `x-prism-active-inference`, and `x-prism-max-concurrent-inference`; `GET /ready` reports capacity as not ready while saturated. This gives load balancers, dashboards, and `PrismEdgeClient` retry/fallback policies a clean backpressure signal instead of timing out under pressure.
 
+Enable `idempotency` when clients may retry inference after network failures or timeouts. Repeated `POST /infer` calls with the same `Idempotency-Key` share the same in-flight work and later return the stored response until the TTL expires. Responses include `x-prism-idempotency: created`, `replayed`, or `hit` so dashboards and tests can see whether work was executed or deduplicated.
+
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, and latency samples.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
@@ -289,6 +298,9 @@ const client = new PrismEdgeClient({
     retries: 2,
     backoffMs: 100,
     maxBackoffMs: 1_000,
+  },
+  idempotency: {
+    // Defaults to request.id for infer/inferEnvelope.
   },
   trace: {
     requestId: () => crypto.randomUUID(),
@@ -313,6 +325,8 @@ const result = await client.infer({
 ```
 
 Client retries are opt-in and target transient conditions by default: `408`, `425`, `429`, `500`, `502`, `503`, and `504`, plus network failures and timeouts. `Retry-After` is respected and capped by `maxRetryAfterMs` so dashboards and edge jobs do not hang unexpectedly.
+
+Set `idempotency: {}` to send an `Idempotency-Key` header for inference calls. The default key is `InferenceRequest.id`; override `idempotency.key` or `idempotency.header` when a workload has its own operation IDs.
 
 Use `waitUntilReady()` in deploy checks, smoke tests, dashboards, or workers that should wait through temporary `503` readiness states such as initialization or overload. It returns the readiness payload once `ready` is true and throws `PrismEdgeClientError` with `READY_TIMEOUT` if the edge never becomes ready in time.
 

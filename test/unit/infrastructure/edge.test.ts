@@ -831,6 +831,64 @@ describe('Edge Adapters', () => {
       expect(metricsText).toContain('prism_edge_gateway_max_concurrent_inference 1');
     });
 
+    it('should deduplicate idempotent inference retries without consuming extra concurrency', async () => {
+      let releaseFirst: (() => void) | undefined;
+      const infer = vi.fn<EdgeInferenceHandler>(request => new Promise<void>(resolve => {
+        releaseFirst = resolve;
+      }).then(() => ({
+        id: request.id,
+        modelId: request.modelId,
+        output: { text: 'idempotent result' },
+        latency: 1,
+        edgeId: 'idempotent-edge',
+        timestamp: Date.now(),
+      })));
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'idempotency-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'idempotent-edge',
+        model,
+        overload: {
+          maxConcurrentInference: 1,
+        },
+        idempotency: {
+          ttlMs: 60_000,
+        },
+        infer,
+      });
+      const request = (id: string) => new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'idempotency-key': 'dedupe-1' },
+        body: JSON.stringify({ id, modelId: model.id, input: 'Deduplicate this work.' }),
+      });
+
+      const first = gateway.handleRequest(request('idempotent-first'));
+      for (let attempt = 0; attempt < 10 && !releaseFirst; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+      expect(releaseFirst).toBeDefined();
+      const replayed = gateway.handleRequest(request('idempotent-replayed'));
+
+      releaseFirst?.();
+      const firstResponse = await first;
+      const replayedResponse = await replayed;
+      const hitResponse = await gateway.handleRequest(request('idempotent-hit'));
+      const firstBody = await firstResponse.json();
+      const replayedBody = await replayedResponse.json();
+      const hitBody = await hitResponse.json();
+
+      expect(firstResponse.status).toBe(200);
+      expect(replayedResponse.status).toBe(200);
+      expect(hitResponse.status).toBe(200);
+      expect(firstResponse.headers.get('x-prism-idempotency')).toBe('created');
+      expect(replayedResponse.headers.get('x-prism-idempotency')).toBe('replayed');
+      expect(hitResponse.headers.get('x-prism-idempotency')).toBe('hit');
+      expect(firstBody.data.id).toBe('idempotent-first');
+      expect(replayedBody.data.id).toBe('idempotent-first');
+      expect(hitBody.data.id).toBe('idempotent-first');
+      expect(infer).toHaveBeenCalledTimes(1);
+    });
+
     it('should expose gateway traffic metrics as snapshots and Prometheus text', async () => {
       const gateway = new PrismEdgeGateway({
         nodeId: 'metrics-gateway-node',
@@ -1284,6 +1342,81 @@ describe('Edge Adapters', () => {
       expect(requests).toHaveLength(2);
       expect(requests[0].headers.get('x-prism-request-id')).toBe('retry-trace-1');
       expect(requests[1].headers.get('x-prism-request-id')).toBe('retry-trace-1');
+    });
+
+    it('should attach idempotency keys to inference calls when configured', async () => {
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        idempotency: {},
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return new Response(JSON.stringify({
+            success: true,
+            latency: 1,
+            cached: false,
+            data: {
+              id: 'idempotent-client',
+              modelId: model.id,
+              output: { text: 'Idempotent client.' },
+              latency: 1,
+              edgeId: 'idempotent-client-edge',
+              timestamp: Date.now(),
+            },
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+
+      await client.infer({
+        id: 'idempotent-client',
+        modelId: model.id,
+        input: 'Send idempotency header.',
+      });
+
+      expect(requests[0].headers.get('idempotency-key')).toBe('idempotent-client');
+    });
+
+    it('should preserve manual idempotency headers over generated keys', async () => {
+      const requests: Request[] = [];
+      const client = new PrismEdgeClient({
+        baseUrl: 'https://edge.test',
+        headers: { 'idempotency-key': 'manual-idempotency-key' },
+        idempotency: {
+          key: 'generated-idempotency-key',
+        },
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return new Response(JSON.stringify({
+            success: true,
+            latency: 1,
+            cached: false,
+            data: {
+              id: 'manual-idempotency-client',
+              modelId: model.id,
+              output: { text: 'Manual idempotency.' },
+              latency: 1,
+              edgeId: 'manual-idempotency-edge',
+              timestamp: Date.now(),
+            },
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        },
+      });
+
+      await client.infer({
+        id: 'manual-idempotency-client',
+        modelId: model.id,
+        input: 'Keep manual idempotency header.',
+      });
+
+      expect(requests[0].headers.get('idempotency-key')).toBe('manual-idempotency-key');
     });
 
     it('should retry transient HTTP responses before returning success', async () => {

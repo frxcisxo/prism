@@ -73,6 +73,17 @@ function createOverloadProtection(env = {}) {
   };
 }
 
+function createIdempotency(env = {}) {
+  if (!env.PRISM_IDEMPOTENCY) {
+    return undefined;
+  }
+
+  return {
+    header: env.PRISM_IDEMPOTENCY_HEADER || 'idempotency-key',
+    ttlMs: envNumber(env.PRISM_IDEMPOTENCY_TTL_MS, 60_000),
+  };
+}
+
 function createAdapter(request, env = {}) {
   const colo = request.cf?.colo || env.PRISM_REGION || 'local-dev';
   const cacheTtl = envNumber(env.PRISM_CACHE_TTL, 120);
@@ -87,6 +98,9 @@ function createAdapter(request, env = {}) {
     env.PRISM_RATE_LIMIT_ROUTES || 'default-rate-routes',
     env.PRISM_MAX_CONCURRENT_INFERENCE || 'unbounded',
     env.PRISM_OVERLOAD_RETRY_AFTER_MS || 'default-overload-retry',
+    env.PRISM_IDEMPOTENCY ? 'idempotent' : 'non-idempotent',
+    env.PRISM_IDEMPOTENCY_HEADER || 'default-idempotency-header',
+    env.PRISM_IDEMPOTENCY_TTL_MS || 'default-idempotency-ttl',
   ].join(':');
 
   if (gateways.has(key)) {
@@ -108,6 +122,7 @@ function createAdapter(request, env = {}) {
     auth: createAuth(env),
     rateLimit: createRateLimit(env),
     overload: createOverloadProtection(env),
+    idempotency: createIdempotency(env),
     edgeConfig: {
       platform: 'cloudflare',
       region: colo,
