@@ -120,6 +120,47 @@ export interface PrismEdgeGatewayMetricsConfig {
   latencyBucketsMs?: number[];
 }
 
+export type PrismEdgeGatewayOperationalStatus = 'healthy' | 'degraded' | 'unavailable';
+
+export interface PrismEdgeGatewayOperationalThresholds {
+  errorRate?: number;
+  rateLimitedRate?: number;
+  overloadedRate?: number;
+  inferP95LatencyMs?: number;
+}
+
+export interface PrismEdgeGatewayOperationalCheck {
+  ok: boolean;
+  status: 'pass' | 'warn' | 'fail';
+  message: string;
+}
+
+export interface PrismEdgeGatewayOperationalReport {
+  generatedAt: number;
+  service: string;
+  status: PrismEdgeGatewayOperationalStatus;
+  summary: string;
+  readiness: PrismEdgeGatewayReadiness;
+  thresholds: Required<PrismEdgeGatewayOperationalThresholds>;
+  traffic: {
+    requests: number;
+    errorRate: number;
+    rateLimitedRate: number;
+    overloadedRate: number;
+    averageLatencyMs: number;
+    inferRequests: number;
+    inferAverageLatencyMs: number;
+    inferP95LatencyMs?: number;
+  };
+  checks: {
+    readiness: PrismEdgeGatewayOperationalCheck;
+    errors: PrismEdgeGatewayOperationalCheck;
+    rateLimit: PrismEdgeGatewayOperationalCheck;
+    overload: PrismEdgeGatewayOperationalCheck;
+    latency: PrismEdgeGatewayOperationalCheck;
+  };
+}
+
 export interface PrismEdgeGatewayTraceConfig {
   header?: string;
   generateId?: (request: Request) => string;
@@ -190,6 +231,7 @@ export interface PrismEdgeGatewayConfig {
   overload?: PrismEdgeGatewayOverloadConfig | false;
   idempotency?: PrismEdgeGatewayIdempotencyConfig | false;
   metrics?: PrismEdgeGatewayMetricsConfig | false;
+  operational?: PrismEdgeGatewayOperationalThresholds;
   trace?: PrismEdgeGatewayTraceConfig | false;
   onEvent?: (event: PrismEdgeGatewayEvent) => void | Promise<void>;
   infer?: EdgeInferenceHandler;
@@ -413,6 +455,65 @@ export class PrismEdgeGateway {
   getMetricsSnapshot(): PrismEdgeGatewayMetricsSnapshot {
     this.refreshConcurrencyMetrics();
     return this.cloneMetricsSnapshot();
+  }
+
+  async getOperationalReport(): Promise<PrismEdgeGatewayOperationalReport> {
+    const readiness = await this.readiness();
+    const snapshot = this.getMetricsSnapshot();
+    const thresholds = this.operationalThresholds();
+    const totalRequests = snapshot.totals.requests;
+    const infer = snapshot.routes.infer;
+    const traffic = {
+      requests: totalRequests,
+      errorRate: this.rate(snapshot.totals.errors, totalRequests),
+      rateLimitedRate: this.rate(snapshot.totals.rateLimited, totalRequests),
+      overloadedRate: this.rate(snapshot.totals.overloaded, totalRequests),
+      averageLatencyMs: snapshot.totals.averageLatencyMs,
+      inferRequests: infer.requests,
+      inferAverageLatencyMs: infer.averageLatencyMs,
+      ...(infer.requests > 0 ? { inferP95LatencyMs: this.percentileFromBuckets(infer, 0.95) } : {}),
+    };
+    const checks = {
+      readiness: this.operationalCheck(
+        readiness.ready,
+        readiness.ready ? 'Gateway is ready for inference traffic' : 'Gateway readiness checks are failing',
+        'fail'
+      ),
+      errors: this.operationalCheck(
+        traffic.errorRate <= thresholds.errorRate,
+        `Gateway error rate is ${(traffic.errorRate * 100).toFixed(2)}%`,
+        'fail'
+      ),
+      rateLimit: this.operationalCheck(
+        traffic.rateLimitedRate <= thresholds.rateLimitedRate,
+        `Gateway rate-limited rate is ${(traffic.rateLimitedRate * 100).toFixed(2)}%`,
+        'warn'
+      ),
+      overload: this.operationalCheck(
+        traffic.overloadedRate <= thresholds.overloadedRate,
+        `Gateway overload rejection rate is ${(traffic.overloadedRate * 100).toFixed(2)}%`,
+        'warn'
+      ),
+      latency: this.operationalCheck(
+        traffic.inferP95LatencyMs === undefined || traffic.inferP95LatencyMs <= thresholds.inferP95LatencyMs,
+        traffic.inferP95LatencyMs === undefined
+          ? 'Gateway has no inference latency samples yet'
+          : `Gateway infer p95 latency is ${traffic.inferP95LatencyMs}ms`,
+        'warn'
+      ),
+    };
+    const status = this.operationalStatus(checks);
+
+    return {
+      generatedAt: Date.now(),
+      service: snapshot.service,
+      status,
+      summary: this.operationalSummary(status),
+      readiness,
+      thresholds,
+      traffic,
+      checks,
+    };
   }
 
   toPrometheusMetrics(): string {
@@ -1352,6 +1453,82 @@ export class PrismEdgeGateway {
         metrics.latencyBucketsMs[key] = (metrics.latencyBucketsMs[key] ?? 0) + 1;
       }
     }
+  }
+
+  private operationalThresholds(): Required<PrismEdgeGatewayOperationalThresholds> {
+    const thresholds = this.config.operational ?? {};
+
+    return {
+      errorRate: thresholds.errorRate ?? 0.05,
+      rateLimitedRate: thresholds.rateLimitedRate ?? 0.1,
+      overloadedRate: thresholds.overloadedRate ?? 0.05,
+      inferP95LatencyMs: thresholds.inferP95LatencyMs ?? 1_000,
+    };
+  }
+
+  private operationalCheck(
+    ok: boolean,
+    message: string,
+    failureStatus: 'warn' | 'fail'
+  ): PrismEdgeGatewayOperationalCheck {
+    return {
+      ok,
+      status: ok ? 'pass' : failureStatus,
+      message,
+    };
+  }
+
+  private operationalStatus(
+    checks: PrismEdgeGatewayOperationalReport['checks']
+  ): PrismEdgeGatewayOperationalStatus {
+    const values = Object.values(checks);
+
+    if (values.some(check => check.status === 'fail')) {
+      return 'unavailable';
+    }
+
+    if (values.some(check => check.status === 'warn')) {
+      return 'degraded';
+    }
+
+    return 'healthy';
+  }
+
+  private operationalSummary(status: PrismEdgeGatewayOperationalStatus): string {
+    if (status === 'healthy') {
+      return 'PRISM edge gateway is healthy';
+    }
+
+    if (status === 'degraded') {
+      return 'PRISM edge gateway is serving traffic with warning conditions';
+    }
+
+    return 'PRISM edge gateway is not ready to serve inference traffic';
+  }
+
+  private rate(count: number, total: number): number {
+    return total === 0 ? 0 : count / total;
+  }
+
+  private percentileFromBuckets(
+    metrics: PrismEdgeGatewayRouteMetrics,
+    percentile: number
+  ): number | undefined {
+    if (metrics.requests <= 0) {
+      return undefined;
+    }
+
+    const target = Math.max(1, Math.ceil(metrics.requests * percentile));
+
+    for (const bucket of this.latencyBucketsMs()) {
+      const count = metrics.latencyBucketsMs[String(bucket)] ?? 0;
+
+      if (count >= target) {
+        return bucket;
+      }
+    }
+
+    return undefined;
   }
 
   private now(): number {

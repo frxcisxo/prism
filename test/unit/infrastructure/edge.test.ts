@@ -955,6 +955,49 @@ describe('Edge Adapters', () => {
       expect(metricsText).toContain('prism_edge_gateway_request_duration_ms_count{route="metrics"} 0');
     });
 
+    it('should summarize gateway operational status from readiness and metrics', async () => {
+      const gateway = new PrismEdgeGateway({
+        nodeId: 'operational-report-gateway-node',
+        platform: 'cloudflare',
+        edgeId: 'operational-report-edge',
+        model,
+        rateLimit: {
+          limit: 1,
+          windowMs: 60_000,
+        },
+        metrics: {
+          latencyBucketsMs: [1, 100, 1_000],
+        },
+        operational: {
+          rateLimitedRate: 0.01,
+          inferP95LatencyMs: 1_000,
+        },
+      });
+
+      await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.90' },
+        body: JSON.stringify({ id: 'operational-1', modelId: model.id, input: 'First request.' }),
+      }));
+      await gateway.handleRequest(new Request('https://edge.test/infer', {
+        method: 'POST',
+        headers: { 'cf-connecting-ip': '203.0.113.90' },
+        body: JSON.stringify({ id: 'operational-2', modelId: model.id, input: 'Limited request.' }),
+      }));
+
+      const report = await gateway.getOperationalReport();
+
+      expect(report.status).toBe('degraded');
+      expect(report.readiness.ready).toBe(true);
+      expect(report.traffic.requests).toBe(2);
+      expect(report.traffic.rateLimitedRate).toBe(0.5);
+      expect(report.traffic.inferRequests).toBe(2);
+      expect(report.traffic.inferP95LatencyMs).toBe(100);
+      expect(report.checks.readiness.status).toBe('pass');
+      expect(report.checks.rateLimit.status).toBe('warn');
+      expect(report.summary).toContain('warning');
+    });
+
     it('should support custom and disabled metrics routes', async () => {
       const customGateway = new PrismEdgeGateway({
         nodeId: 'custom-metrics-gateway-node',

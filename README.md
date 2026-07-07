@@ -257,6 +257,9 @@ const gateway = new PrismEdgeGateway({
   },
 });
 
+const report = await gateway.getOperationalReport();
+console.log(report.status, report.summary);
+
 export default {
   async fetch(request: Request) {
     return gateway.handleRequest(request);
@@ -279,6 +282,8 @@ Set `overload.maxConcurrentInference` to protect an edge node from too many acti
 Enable `idempotency` when clients may retry inference after network failures or timeouts. Repeated `POST /infer` calls with the same `Idempotency-Key` share the same in-flight work and later return the stored response until the TTL expires. Responses include `x-prism-idempotency: created`, `replayed`, or `hit` so dashboards and tests can see whether work was executed or deduplicated.
 
 `gateway.getMetricsSnapshot()` returns an in-memory JSON snapshot for dashboards and tests. `gateway.toPrometheusMetrics()` and `GET /metrics` expose counters for total requests, route/status counts, unauthorized calls, rate-limited calls, overload rejections, active inference, configured concurrency limits, 5xx errors, latency samples, and Prometheus histograms through `prism_edge_gateway_request_duration_ms_bucket` for SLO dashboards.
+
+`gateway.getOperationalReport()` combines readiness and metrics into a compact `healthy`, `degraded`, or `unavailable` report with checks for readiness, error rate, rate limiting, overload, and inferred p95 latency. Use it for dashboards, smoke tests, deploy gates, or lightweight support diagnostics.
 
 Gateway responses include `x-prism-request-id` by default. Pass the same header from clients to preserve an upstream trace ID, customize it with `trace.header`, or set `trace: false` if another layer owns correlation IDs.
 

@@ -620,6 +620,7 @@ try {
     input: 'Validate PrismEdgeClient.',
   });
   const gatewayMetricsSnapshot = gateway.getMetricsSnapshot();
+  const gatewayOperationalReport = await gateway.getOperationalReport();
   const protectedGateway = new PrismEdgeGateway({
     nodeId: 'validation-protected-gateway',
     platform: 'cloudflare',
@@ -815,6 +816,9 @@ try {
     || !clientMetrics.includes('prism_edge_gateway_request_duration_ms_bucket')
     || gatewayMetricsSnapshot.routes.infer.status['200'] < 2
     || !gatewayMetricsSnapshot.routes.infer.latencyBucketsMs['5000']
+    || gatewayOperationalReport.status !== 'healthy'
+    || gatewayOperationalReport.traffic.inferRequests < 2
+    || gatewayOperationalReport.checks.readiness.status !== 'pass'
     || openapiBody.components.schemas.InferenceRequest.properties.modelId.const !== 'validation-gateway-model'
     || health.stats.models !== 1
     || firstGatewayBody.data.edgeId !== 'cloudflare-validation'
