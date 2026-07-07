@@ -4,6 +4,9 @@ const kvStore = new Map();
 const env = {
   PRISM_REGION: 'iad',
   PRISM_CACHE_TTL: '300',
+  PRISM_EDGE_TOKEN: 'local-worker-token',
+  PRISM_RATE_LIMIT: '3',
+  PRISM_RATE_WINDOW_MS: '60000',
   PRISM_CACHE: {
     async get(key, options) {
       const entry = kvStore.get(key);
@@ -33,9 +36,10 @@ function request(path, init = {}) {
   });
 }
 
-async function postInfer(id, input) {
+async function postInfer(id, input, headers = { authorization: 'Bearer local-worker-token' }) {
   const response = await worker.fetch(request('/infer', {
     method: 'POST',
+    headers,
     body: JSON.stringify({
       id,
       modelId: 'edge-triage-small',
@@ -66,8 +70,14 @@ console.log('OK health endpoint initializes PRISM');
 const openapi = await worker.fetch(request('/openapi.json'), env).then(response => response.json());
 assert(openapi.openapi === '3.1.0', 'OpenAPI endpoint did not return an OpenAPI 3.1 document');
 assert(openapi.paths['/infer'].post.operationId === 'runPrismEdgeInference', 'OpenAPI endpoint did not describe inference route');
+assert(openapi.paths['/infer'].post.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark inference as bearer-protected');
+assert(openapi.paths['/metrics'].get.security?.[0]?.bearerAuth, 'OpenAPI endpoint did not mark metrics as bearer-protected');
 assert(openapi.components.schemas.InferenceRequest.properties.modelId.const === 'edge-triage-small', 'OpenAPI endpoint did not bind the gateway model id');
 console.log('OK OpenAPI endpoint describes the Worker contract');
+
+const deniedInference = await postInfer('cfw-denied', 'Missing token.', {});
+assert(deniedInference.status === 401, 'protected inference did not reject a missing bearer token');
+console.log('OK protected inference rejects missing bearer token');
 
 const first = await postInfer('cfw-1', 'Prioritize an urgent store shelf anomaly at the edge.');
 assert(first.status === 200, 'first inference did not return HTTP 200');
@@ -84,11 +94,27 @@ console.log('OK repeat inference hits Cloudflare KV cache');
 
 const invalid = await worker.fetch(request('/infer', {
   method: 'POST',
+  headers: { authorization: 'Bearer local-worker-token' },
   body: JSON.stringify({ id: 'bad-request' }),
 }), env);
 const invalidBody = await invalid.json();
 assert(invalid.status === 400, 'invalid request did not return HTTP 400');
 assert(invalidBody.error.code === 'INVALID_REQUEST', 'invalid request did not expose validation code');
 console.log('OK invalid inference request is rejected safely');
+
+const limited = await postInfer('cfw-limited', 'This call should exceed the local smoke rate limit.');
+assert(limited.status === 429, 'rate-limited inference did not return HTTP 429');
+assert(limited.body.error.code === 'RATE_LIMITED', 'rate-limited inference did not expose RATE_LIMITED code');
+console.log('OK rate limit rejects excess inference traffic');
+
+const deniedMetrics = await worker.fetch(request('/metrics'), env);
+assert(deniedMetrics.status === 401, 'protected metrics did not reject a missing bearer token');
+const metrics = await worker.fetch(request('/metrics', {
+  headers: { authorization: 'Bearer local-worker-token' },
+}), env).then(response => response.text());
+assert(metrics.includes('prism_edge_gateway_requests_total'), 'metrics endpoint did not expose gateway request counter');
+assert(metrics.includes('prism_edge_gateway_unauthorized_total 2'), 'metrics endpoint did not count unauthorized inference and metrics calls');
+assert(metrics.includes('prism_edge_gateway_rate_limited_total 1'), 'metrics endpoint did not count rate-limited inference');
+console.log('OK protected metrics expose operational counters');
 
 console.log('\nAll Cloudflare Worker checks passed.');

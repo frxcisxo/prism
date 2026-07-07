@@ -17,35 +17,88 @@ const model = {
 const localCache = new MemoryEdgeCache();
 const gateways = new Map();
 
+function envNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function envList(value, fallback) {
+  if (!value) {
+    return fallback;
+  }
+
+  return String(value)
+    .split(',')
+    .map(route => route.trim())
+    .filter(Boolean);
+}
+
 function createCache(env = {}) {
   return env.PRISM_CACHE
     ? new CloudflareKVEdgeCache(env.PRISM_CACHE, { readCacheTtl: 60 })
     : localCache;
 }
 
+function createAuth(env = {}) {
+  if (!env.PRISM_EDGE_TOKEN) {
+    return undefined;
+  }
+
+  return {
+    bearerToken: String(env.PRISM_EDGE_TOKEN),
+    protectedRoutes: envList(env.PRISM_PROTECTED_ROUTES, ['infer', 'metrics']),
+  };
+}
+
+function createRateLimit(env = {}) {
+  if (!env.PRISM_RATE_LIMIT) {
+    return undefined;
+  }
+
+  return {
+    limit: envNumber(env.PRISM_RATE_LIMIT, 120),
+    windowMs: envNumber(env.PRISM_RATE_WINDOW_MS, 60_000),
+    routes: envList(env.PRISM_RATE_LIMIT_ROUTES, ['infer']),
+  };
+}
+
 function createAdapter(request, env = {}) {
   const colo = request.cf?.colo || env.PRISM_REGION || 'local-dev';
-  const key = `${colo}:${env.PRISM_CACHE ? 'kv' : 'memory'}:${env.PRISM_CACHE_TTL || 120}`;
+  const cacheTtl = envNumber(env.PRISM_CACHE_TTL, 120);
+  const key = [
+    colo,
+    env.PRISM_CACHE ? 'kv' : 'memory',
+    cacheTtl,
+    env.PRISM_EDGE_TOKEN ? 'auth' : 'public',
+    env.PRISM_PROTECTED_ROUTES || 'default-protected',
+    env.PRISM_RATE_LIMIT || 'unlimited',
+    env.PRISM_RATE_WINDOW_MS || 'default-window',
+    env.PRISM_RATE_LIMIT_ROUTES || 'default-rate-routes',
+  ].join(':');
 
   if (gateways.has(key)) {
     return gateways.get(key);
   }
+
+  const edgeId = `cloudflare-${String(colo).toLowerCase()}`;
 
   const gateway = new PrismEdgeGateway({
     nodeId: 'cloudflare-prism-edge',
     serviceName: 'prism-cloudflare-worker',
     platform: 'cloudflare',
     region: colo,
-    edgeId: `cloudflare-${String(colo).toLowerCase()}`,
-    cacheTtl: Number(env.PRISM_CACHE_TTL || 120),
+    edgeId,
+    cacheTtl,
     model,
     cache: createCache(env),
     cors: true,
+    auth: createAuth(env),
+    rateLimit: createRateLimit(env),
     edgeConfig: {
       platform: 'cloudflare',
       region: colo,
-      edgeId: `cloudflare-${String(colo).toLowerCase()}`,
-      cacheTtl: Number(env.PRISM_CACHE_TTL || 120),
+      edgeId,
+      cacheTtl,
     },
     enrichOutput: (result, _inferenceRequest, context) => ({
         ...result,
