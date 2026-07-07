@@ -4,13 +4,15 @@
 [![CI](https://github.com/frxcisxo/prism/actions/workflows/ci.yml/badge.svg)](https://github.com/frxcisxo/prism/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/frxcisxo/prism/blob/main/LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3%2B-blue)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-204%20passed-brightgreen)](https://github.com/frxcisxo/prism)
+[![Tests](https://img.shields.io/badge/tests-243%20passed-brightgreen)](https://github.com/frxcisxo/prism)
 
 > CRDT-first orchestration toolkit for edge AI workloads: distributed model registries, cache convergence, multi-model ensembles, edge adapters, and WebGPU tensor primitives.
 
 ## Current Status
 
 PRISM is now buildable, type-checkable, and demoable as a TypeScript package.
+
+Runtime support: Node.js 22+ is supported and CI verifies the package on Node.js 22 and 24.
 
 Implemented today:
 
@@ -1059,7 +1061,7 @@ const result = await prism.infer(request);
 
 ### Performance Benchmarks (Measured)
 
-Measured on local macOS with Node 20 using PRISM's current in-memory inference pipeline.
+Measured on local macOS with Node.js 24 using PRISM's current in-memory inference pipeline.
 
 - **Synthetic cached throughput**: 100 inferences in 0.71ms → **140,804 req/s**
 - **Generic inference cold path**: ~10-12ms per request for a loaded model
@@ -1317,7 +1319,7 @@ await prism.deployModel({
 - [x] **Memory pooling** - Object reuse to reduce GC pressure (implemented)
 - [x] **Binary serialization** - Efficient data serialization with compression (implemented)
 - [x] **Clean Architecture** - Proper separation of concerns across layers (implemented)
-- [x] **Comprehensive testing** - 204 unit tests covering all major functionality (100% pass rate)
+- [x] **Comprehensive testing** - 243 unit tests covering all major functionality (100% pass rate)
 - [x] **Optional ONNX runtime** - Real `onnxruntime-web` execution with model artifact integrity checks
 - [x] **HTTP/OpenAI-compatible runtime** - Remote gateway adapter with bearer auth, custom request/response hooks, batch fan-out, and engine integration
 - [x] **Cloudflare Workers AI runtime** - Native `env.AI.run()` binding and REST API adapter with AI Gateway support
@@ -1360,7 +1362,7 @@ bun test     # or npm test
 
 ### 🧪 Test Structure
 
-Tests are organized by Clean Architecture layers with **204 tests passing**:
+Tests are organized by Clean Architecture layers with **243 tests passing**:
 
 ```
 test/
